@@ -1,0 +1,13 @@
+# Python 缓存
+__pycache__/
+*.pyc
+
+# IDE 配置
+.idea/
+
+# PyInstaller 打包输出目录
+pipinstaller/
+
+# 测试数据
+test/
+save/
