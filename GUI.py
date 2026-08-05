@@ -20,7 +20,7 @@ import math
 from functools import partial
 
 from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QLocale
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QMainWindow, QFileDialog, QPushButton,
     QHBoxLayout, QVBoxLayout, QGridLayout, QSlider, QLineEdit, QComboBox,
@@ -33,11 +33,16 @@ import numpy as np
 
 # Try importing user's dithering functions. If unavailable, provide simple placeholders.
 try:
-    from dithers import ordered_dithering, floyd_steinberg_dither
+    from dithers import ordered_dithering, floyd_steinberg_dither, barycentric_dither
 
     print("Loaded dithering functions from dithers.py")
 except Exception as e:
     print("Could not import dithering functions (dithers.py). Using placeholders.", e)
+
+
+    def barycentric_dither(image, palette, method="bayer", space="RGB", **kwargs):
+        # Placeholder: 回退为普通有序抖动
+        return ordered_dithering(image, palette, method=method, strength=64)
 
 
     def ordered_dithering(image, palette, method="bayer", strength=64, color_space="RGB", weights=(1.0, 1.0, 1.0)):
@@ -234,8 +239,38 @@ class DropLabel(QLabel):
             self.image_dropped.emit(path)
 
 
+# 后台处理线程：把耗时的图片加载/抖动放到子线程，UI 保持响应
+class ProcessWorker(QThread):
+    finished = pyqtSignal(object)   # 成功结果（PIL Image 等）
+    failed = pyqtSignal(str)        # 失败信息
+
+    def __init__(self, func, args, parent=None):
+        super().__init__(parent)
+        self._func = func
+        self._args = args
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        try:
+            result = self._func(*self._args)
+            if not self._cancel:
+                self.finished.emit(result)
+        except Exception as e:
+            if not self._cancel:
+                self.failed.emit(str(e))
+
+
 class ImageDitherApp(QMainWindow):
     def __init__(self):
+        # 修复 Qt5 bug：部分 CJK 区域（如 zh_HK）的系统默认 QLocale 会把数字格式化成
+        # CJK 字形（100 → 〈〇〇），影响所有 QSpinBox。用同名 locale 显式重建可保留
+        # 区域设置、同时使用拉丁数字。
+        # 注意：必须在 super().__init__()（创建窗口）之前调用——子控件会继承父窗口
+        # 构造时捕获的 locale，窗口建好后 setDefault 对已挂载的控件不生效。
+        QLocale.setDefault(QLocale(QLocale().name()))
         super().__init__()
         self.setWindowTitle('Image Dither & Compress (PyQt5)')
         self.resize(1200, 800)  # 增加窗口宽度以容纳更多控件
@@ -249,6 +284,16 @@ class ImageDitherApp(QMainWindow):
 
         self.save_folder = os.path.join(os.getcwd(), 'save')
         os.makedirs(self.save_folder, exist_ok=True)
+
+        # 后台线程引用（防止被 GC），以及预览缩略图上限
+        self._worker = None
+        self.preview_cap = 1600  # 预览时处理的最大边长(px)，大图用缩略图保证流畅
+        self._was_preview = False  # 最近一次处理是预览还是保存
+
+        # 重心混合：凸包投影 开/关 各存一套 权重截断/边缘保护 的值，勾选切换时互换
+        self._minw_cfg = {'off': 0.0, 'on': 0.1}
+        self._edge_cfg = {'off': 0, 'on': 10}
+        self._gamut_state = False
 
         self._build_ui()
 
@@ -342,7 +387,7 @@ class ImageDitherApp(QMainWindow):
         method_layout = QHBoxLayout()
         method_layout.addWidget(QLabel('抖动方法'))
         self.combo_dither = QComboBox()
-        self.combo_dither.addItems(['有序抖动', '误差扩散抖动'])
+        self.combo_dither.addItems(['有序抖动', '误差扩散抖动', '重心混合'])
         self.combo_dither.currentIndexChanged.connect(self.on_dither_method_change)
         method_layout.addWidget(self.combo_dither)
         dither_layout.addLayout(method_layout)
@@ -361,7 +406,7 @@ class ImageDitherApp(QMainWindow):
         # 色彩空间选择
         ordered_layout.addWidget(QLabel('色彩空间'), 1, 0)
         self.combo_color_space = QComboBox()
-        self.combo_color_space.addItems(['RGB', 'HSV'])
+        self.combo_color_space.addItems(['RGB', 'HSV', 'Lab'])
         self.combo_color_space.currentIndexChanged.connect(self.on_color_space_change)
         ordered_layout.addWidget(self.combo_color_space, 1, 1)
 
@@ -410,8 +455,57 @@ class ImageDitherApp(QMainWindow):
         self.spin_alpha.setValue(1.0)
         floyd_layout.addWidget(self.spin_alpha, 0, 1)
 
+        floyd_layout.addWidget(QLabel('滤波核'), 1, 0)
+        self.combo_filter = QComboBox()
+        self.combo_filter.addItems(['FS', 'Jarvis', 'Stucki'])
+        self.combo_filter.setToolTip('FS 最快(4权重)；Jarvis/Stucki 观感略好但更慢')
+        floyd_layout.addWidget(self.combo_filter, 1, 1)
+
         dither_layout.addWidget(self.floyd_params)
         self.floyd_params.setVisible(False)
+
+        # 重心混合抖动参数区域（含可勾选的增强项）
+        self.bary_params = QWidget()
+        bary_layout = QGridLayout(self.bary_params)
+        bary_layout.addWidget(QLabel('混合空间'), 0, 0)
+        self.combo_bary_space = QComboBox()
+        self.combo_bary_space.addItems(['RGB', 'Lab'])
+        self.combo_bary_space.setToolTip('RGB：区域平均精确；Lab：更符合人眼感知')
+        bary_layout.addWidget(self.combo_bary_space, 0, 1)
+        bary_layout.addWidget(QLabel('阈值矩阵'), 1, 0)
+        self.combo_bary_matrix = QComboBox()
+        self.combo_bary_matrix.addItems(['bayer', 'clustered', 'diagonal', 'spiral'])
+        bary_layout.addWidget(self.combo_bary_matrix, 1, 1)
+        bary_layout.addWidget(QLabel('扰动强度'), 2, 0)
+        self.spin_bary_strength = QSpinBox()
+        self.spin_bary_strength.setRange(0, 128)
+        self.spin_bary_strength.setValue(64)
+        self.spin_bary_strength.setToolTip('近色/凸包外区域的纹理扰动强度；0=纯重心（这类区域会平涂，但区域色差最小）')
+        bary_layout.addWidget(self.spin_bary_strength, 2, 1)
+
+        # --- 增强项（凸包投影控制权重截断/边缘保护的默认值联动） ---
+        bary_layout.addWidget(QLabel('凸包投影'), 3, 0)
+        self.chk_bary_gamut = QCheckBox('启用')
+        self.chk_bary_gamut.setChecked(False)
+        self.chk_bary_gamut.setToolTip('凸包外像素投影到凸包表面最近点再混合，改善饱和色区域色差。勾选后权重截断/边缘保护自动设为 0.1/10；取消则恢复之前的值')
+        self.chk_bary_gamut.stateChanged.connect(self._on_gamut_toggled)
+        bary_layout.addWidget(self.chk_bary_gamut, 3, 1)
+        bary_layout.addWidget(QLabel('权重截断'), 4, 0)
+        self.spin_bary_minw = QDoubleSpinBox()
+        self.spin_bary_minw.setRange(0.0, 0.5)
+        self.spin_bary_minw.setSingleStep(0.05)
+        self.spin_bary_minw.setValue(0.0)
+        self.spin_bary_minw.setToolTip('丢弃权重低于该值的顶点色再归一化，缓解像素弥散（0=不截断）')
+        bary_layout.addWidget(self.spin_bary_minw, 4, 1)
+        bary_layout.addWidget(QLabel('边缘保护阈值'), 5, 0)
+        self.spin_bary_edge = QSpinBox()
+        self.spin_bary_edge.setRange(0, 50)
+        self.spin_bary_edge.setValue(0)
+        self.spin_bary_edge.setToolTip('Lab色差边缘保护：边缘像素走有序路径保锐度（0=关闭）')
+        bary_layout.addWidget(self.spin_bary_edge, 5, 1)
+
+        dither_layout.addWidget(self.bary_params)
+        self.bary_params.setVisible(False)
 
         ctrl_layout.addWidget(dither_group)
 
@@ -425,12 +519,16 @@ class ImageDitherApp(QMainWindow):
         ctrl_layout.addLayout(save_layout)
 
         action_layout = QHBoxLayout()
-        btn_preview = QPushButton('预览处理结果')
-        btn_preview.clicked.connect(self.on_preview)
-        action_layout.addWidget(btn_preview)
-        btn_save = QPushButton('保存结果')
-        btn_save.clicked.connect(self.on_save)
-        action_layout.addWidget(btn_save)
+        self.btn_preview = QPushButton('预览处理结果')
+        self.btn_preview.clicked.connect(self.on_preview)
+        action_layout.addWidget(self.btn_preview)
+        self.btn_save = QPushButton('保存结果')
+        self.btn_save.clicked.connect(self.on_save)
+        action_layout.addWidget(self.btn_save)
+        self.btn_cancel = QPushButton('取消')
+        self.btn_cancel.clicked.connect(self.on_cancel)
+        self.btn_cancel.setVisible(False)
+        action_layout.addWidget(self.btn_cancel)
         ctrl_layout.addLayout(action_layout)
 
         ctrl_layout.addStretch()
@@ -463,11 +561,17 @@ class ImageDitherApp(QMainWindow):
         if method == '有序抖动':
             self.ordered_params.setVisible(True)
             self.floyd_params.setVisible(False)
+            self.bary_params.setVisible(False)
             # 触发色彩空间变化以更新HSV权重显示
             self.on_color_space_change()
+        elif method == '重心混合':
+            self.ordered_params.setVisible(False)
+            self.floyd_params.setVisible(False)
+            self.bary_params.setVisible(True)
         else:
             self.ordered_params.setVisible(False)
             self.floyd_params.setVisible(True)
+            self.bary_params.setVisible(False)
 
     def on_color_space_change(self):
         color_space = self.combo_color_space.currentText()
@@ -475,6 +579,20 @@ class ImageDitherApp(QMainWindow):
             self.hsv_params.setVisible(True)
         else:
             self.hsv_params.setVisible(False)
+
+    def _on_gamut_toggled(self, state):
+        """凸包投影勾选切换：把当前 权重截断/边缘保护 值存进旧状态的配置，
+        再载入新状态对应的那套值。两套值分别保存、互不覆盖。"""
+        new_state = (state == Qt.Checked)
+        old_key = 'on' if self._gamut_state else 'off'
+        new_key = 'on' if new_state else 'off'
+        # 保存当前值到旧状态配置
+        self._minw_cfg[old_key] = self.spin_bary_minw.value()
+        self._edge_cfg[old_key] = self.spin_bary_edge.value()
+        # 载入新状态配置
+        self.spin_bary_minw.setValue(self._minw_cfg[new_key])
+        self.spin_bary_edge.setValue(self._edge_cfg[new_key])
+        self._gamut_state = new_state
 
     def build_palette_list(self):
         # Get selected colors from both panels
@@ -494,70 +612,194 @@ class ImageDitherApp(QMainWindow):
             self.load_image_from_path(p)
 
     def load_image_from_path(self, path):
-        try:
-            img = Image.open(path)
-            img.load()  # 确保数据都读入，避免延迟加载导致的问题
-            # 尽量保留 alpha（如果存在），否则至少转为 RGB/L
-            bands = img.getbands()
-            if 'A' in bands:
-                img = img.convert('RGBA')
-            elif img.mode == 'P':
-                # 事先把调色板图像转为 RGBA（可保留透明），没有透明也不会坏
-                img = img.convert('RGBA')
-            elif img.mode not in ('RGB', 'L'):
-                img = img.convert('RGB')
-            # 复制一份到内存，断开与文件句柄的关联（更安全）
-            img = img.copy()
-        except Exception as e:
-            QMessageBox.warning(self, '打开失败', f'无法打开图片: {e}')
-            return
+        # 大图解码很耗时，放到后台线程，避免阻塞界面
+        self.lbl_file.setText('正在加载图片…')
+        self.statusBar().showMessage('正在加载图片…')
+        self._run_worker(self._load_task, (path,), self._on_image_loaded, self._on_image_failed)
 
+    def _load_task(self, path):
+        img = Image.open(path)
+        img.load()  # 确保数据都读入，避免延迟加载导致的问题
+        # 尽量保留 alpha（如果存在），否则至少转为 RGB/L
+        bands = img.getbands()
+        if 'A' in bands:
+            img = img.convert('RGBA')
+        elif img.mode == 'P':
+            # 事先把调色板图像转为 RGBA（可保留透明），没有透明也不会坏
+            img = img.convert('RGBA')
+        elif img.mode not in ('RGB', 'L'):
+            img = img.convert('RGB')
+        # 复制一份到内存，断开与文件句柄的关联（更安全）
+        return (path, img.copy())
+
+    def _on_image_loaded(self, result):
+        path, img = result
         self.image_path = path
         self.original_image = img
+        self.processed_image = None
         self.lbl_file.setText(os.path.basename(path))
         self.display_mode = 0
         self.show_image_in_label(self.original_image)
+        self.statusBar().showMessage('图片加载完成')
+
+    def _on_image_failed(self, err):
+        self.lbl_file.setText('未选择文件')
+        self.statusBar().clearMessage()
+        QMessageBox.warning(self, '打开失败', f'无法打开图片: {err}')
+
+    # 收集当前界面上的抖动参数（在主线程调用）
+    def _gather_settings(self):
+        settings = {'method': self.combo_dither.currentText()}
+        if settings['method'] == '有序抖动':
+            settings['strength'] = int(self.spin_strength.value())
+            settings['color_space'] = self.combo_color_space.currentText()
+            settings['matrix'] = self.combo_matrix.currentText()
+            if settings['color_space'] == 'HSV':
+                settings['weights'] = (
+                    float(self.spin_h_weight.value()),
+                    float(self.spin_s_weight.value()),
+                    float(self.spin_v_weight.value()),
+                )
+        elif settings['method'] == '重心混合':
+            settings['space'] = self.combo_bary_space.currentText()
+            settings['matrix'] = self.combo_bary_matrix.currentText()
+            settings['strength'] = int(self.spin_bary_strength.value())
+            settings['gamut'] = self.chk_bary_gamut.isChecked()
+            settings['min_weight'] = float(self.spin_bary_minw.value())
+            settings['edge_guard'] = int(self.spin_bary_edge.value())
+        else:
+            settings['alpha'] = float(self.spin_alpha.value())
+            settings['filter'] = self.combo_filter.currentText()
+        settings['resize'] = self._capture_resize_params()
+        return settings
+
+    # 后台线程里的实际处理任务：先缩放，再抖动
+    # for_preview=True 时对大图先缩到预览尺寸（保持界面流畅）；for_preview=False 按完整尺寸处理
+    def _dither_task(self, image, palette, settings, for_preview):
+        img = self._resize_image(image, settings['resize'])
+        if img is None:
+            raise RuntimeError('图片为空')
+        cap = self.preview_cap
+        if for_preview and settings['method'] == '误差扩散抖动':
+            cap = 1000  # 误差扩散是串行算法，预览用更低分辨率保证流畅
+        if for_preview and max(img.size) > cap:
+            s = cap / max(img.size)
+            img = img.resize((max(1, int(img.width * s)), max(1, int(img.height * s))), Image.LANCZOS)
+        if settings['method'] == '重心混合':
+            return barycentric_dither(
+                img, palette,
+                method=settings['matrix'],
+                space=settings.get('space', 'RGB'),
+                strength=settings.get('strength', 64),
+                gamut=settings.get('gamut', False),
+                min_weight=settings.get('min_weight', 0.0),
+                edge_guard=settings.get('edge_guard', 0),
+            )
+        elif settings['method'] == '有序抖动':
+            return ordered_dithering(
+                img, palette,
+                method=settings['matrix'],
+                strength=settings['strength'],
+                color_space=settings['color_space'],
+                weights=settings.get('weights', (1.0, 1.0, 1.0)),
+            )
+        else:
+            return floyd_steinberg_dither(img, palette, alpha_strength=settings['alpha'],
+                                          filter_type=settings.get('filter', 'FS'))
+
+    def _on_process_done(self, out):
+        self.processed_image = out
+        self.display_mode = 1
+        self.show_image_in_label(self.processed_image)
+        self._set_processing(False)
+        if self._was_preview:
+            self.statusBar().showMessage('预览已生成（大图为缩略图近似，保存时按完整尺寸处理）')
+        else:
+            self.statusBar().showMessage('处理完成')
+
+    def _on_process_failed(self, err):
+        self._set_processing(False)
+        self.statusBar().clearMessage()
+        QMessageBox.warning(self, '处理失败', f'应用抖动失败: {err}')
+
+    def _set_processing(self, active):
+        self.btn_preview.setEnabled(not active)
+        self.btn_save.setEnabled(not active)
+        self.btn_cancel.setVisible(active)
+        if active:
+            self.statusBar().showMessage('正在处理…')
+
+    def on_cancel(self):
+        if self._worker is not None:
+            self._worker.cancel()
+            self._worker = None  # 允许立即开始新的处理
+        self._set_processing(False)
+        self.statusBar().showMessage('已取消')
+
+    # 通用后台任务启动器
+    def _run_worker(self, func, args, on_done, on_fail=None):
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.cancel()
+        worker = ProcessWorker(func, args, self)
+        worker.finished.connect(on_done)
+        worker.failed.connect(on_fail if on_fail is not None else self._on_process_failed)
+        worker.finished.connect(self._on_worker_done)
+        worker.failed.connect(self._on_worker_done)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        self._worker = worker
+        worker.start()
+
+    def _on_worker_done(self, *args):
+        self._worker = None
 
     def pil_image_to_qpixmap(self, pil_img):
-        """把 PIL Image 转为 QPixmap；对多种模式做兼容处理（RGBA, RGB, L 等）。"""
+        """把 PIL Image 转为 QPixmap；对多种模式做兼容处理（RGBA, RGB, L 等）。
+
+        关键：QImage 必须显式传入 bytesPerLine = w * bpp。
+        PIL 的 tobytes('raw', ...) 每行是不对齐的，若让 Qt 按对齐后的
+        bytesPerLine 读取，奇数宽度的行会产生越界读，导致段错误。
+        """
         if pil_img is None:
             return QPixmap()
 
-        w, h = pil_img.size
         try:
-            # 优先用直接字节构造 QImage（更稳健，不依赖 ImageQt 的具体实现）
+            # 选择模式对应的格式和原始字节布局
             if pil_img.mode == 'RGBA':
-                # 如果 Qt 支持 Format_RGBA8888 用它，否则使用 BGRA + ARGB32 作为回退
                 if hasattr(QImage, 'Format_RGBA8888'):
-                    data = pil_img.tobytes('raw', 'RGBA')
-                    qimg = QImage(data, w, h, QImage.Format_RGBA8888)
+                    fmt, raw, bpp = QImage.Format_RGBA8888, 'RGBA', 4
                 else:
-                    # BGRA + ARGB32 是常用的回退做法（在小端平台上字节顺序匹配）
-                    data = pil_img.convert('RGBA').tobytes('raw', 'BGRA')
-                    qimg = QImage(data, w, h, QImage.Format_ARGB32)
+                    fmt, raw, bpp = QImage.Format_ARGB32, 'BGRA', 4
             elif pil_img.mode == 'RGB':
-                data = pil_img.tobytes('raw', 'RGB')
-                qimg = QImage(data, w, h, QImage.Format_RGB888)
+                fmt, raw, bpp = QImage.Format_RGB888, 'RGB', 3
             elif pil_img.mode == 'L':
-                data = pil_img.tobytes('raw', 'L')
                 fmt = QImage.Format_Grayscale8 if hasattr(QImage, 'Format_Grayscale8') else QImage.Format_Indexed8
-                qimg = QImage(data, w, h, fmt)
+                raw, bpp = 'L', 1
             else:
                 # 其它模式（例如 CMYK 等）先转换为 RGBA 再处理
-                pil2 = pil_img.convert('RGBA')
-                data = pil2.tobytes('raw', 'BGRA')
-                qimg = QImage(data, pil2.width, pil2.height, QImage.Format_ARGB32)
+                pil_img = pil_img.convert('RGBA')
+                if hasattr(QImage, 'Format_RGBA8888'):
+                    fmt, raw, bpp = QImage.Format_RGBA8888, 'RGBA', 4
+                else:
+                    fmt, raw, bpp = QImage.Format_ARGB32, 'BGRA', 4
 
+            w, h = pil_img.size
+            data = pil_img.tobytes('raw', raw)
+            qimg = QImage(data, w, h, w * bpp, fmt)  # 显式 bytesPerLine，避免对齐越界
             return QPixmap.fromImage(qimg)
         except Exception as e:
-            # 最后再尝试使用 PIL 的 ImageQt（若存在），作为兼容回退
-            try:
-                from PIL.ImageQt import ImageQt as PILImageQt
-                qim = PILImageQt(pil_img)
-                return QPixmap.fromImage(qim)
-            except Exception as e2:
-                print("pil->qpixmap 转换失败：", e, e2)
-                return QPixmap()
+            print("pil->qpixmap 转换失败：", e)
+            return QPixmap()
+
+    def _make_display_pixmap(self, pil_img, max_dim=1600):
+        """把 PIL 图像缩到适合显示的尺寸再转 QPixmap，避免大图占用海量内存/阻塞界面。"""
+        if pil_img is None:
+            return QPixmap()
+        w, h = pil_img.size
+        scale = min(1.0, max_dim / max(w, h))
+        if scale < 1.0:
+            pil_img = pil_img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+        return self.pil_image_to_qpixmap(pil_img)
 
     def show_image_in_label(self, pil_img):
         # Convert PIL image to QPixmap robustly, then set scaled pixmap to label
@@ -565,7 +807,7 @@ class ImageDitherApp(QMainWindow):
             self.preview_label.clear()
             return
 
-        pix = self.pil_image_to_qpixmap(pil_img)
+        pix = self._make_display_pixmap(pil_img)
         if pix is None or pix.isNull():
             self.preview_label.clear()
             self.preview_label.setText("无法显示图片")
@@ -625,31 +867,31 @@ class ImageDitherApp(QMainWindow):
             self.save_folder = p
             self.line_save.setText(p)
 
-    def apply_resize(self, image: Image.Image) -> Image.Image:
+    def _capture_resize_params(self):
+        """在主线程采集缩放参数，供后台线程使用（避免跨线程读控件）。"""
+        return (self.line_w.text().strip(), self.line_h.text().strip(), self.spin_percent.value())
+
+    def _resize_image(self, image: Image.Image, params):
+        """纯函数：按参数缩放图片。params = (w_text, h_text, pct)。"""
         if image is None:
             return None
         ow, oh = image.size
-        # manual width/height take precedence if provided
-        w_text = self.line_w.text().strip()
-        h_text = self.line_h.text().strip()
+        w_text, h_text, pct = params
         if w_text or h_text:
             try:
                 if w_text and h_text:
-                    nw = int(w_text);
-                    nh = int(h_text)
+                    nw, nh = int(w_text), int(h_text)
                 elif w_text:
-                    nw = int(w_text);
+                    nw = int(w_text)
                     nh = int(round(oh * (nw / ow)))
                 else:
-                    nh = int(h_text);
+                    nh = int(h_text)
                     nw = int(round(ow * (nh / oh)))
                 if nw <= 0 or nh <= 0:
                     return image
                 return image.resize((nw, nh), Image.LANCZOS)
             except Exception:
                 return image
-        # else use percent
-        pct = self.spin_percent.value()
         if pct == 100:
             return image
         scale = pct / 100.0
@@ -657,50 +899,43 @@ class ImageDitherApp(QMainWindow):
         nh = max(1, int(round(oh * scale)))
         return image.resize((nw, nh), Image.LANCZOS)
 
+    def apply_resize(self, image: Image.Image) -> Image.Image:
+        return self._resize_image(image, self._capture_resize_params())
+
     def on_preview(self):
         if not self.original_image:
             QMessageBox.information(self, '提示', '请先选择图片')
+            return
+        if self._worker is not None and self._worker.isRunning():
+            return  # 正在处理，忽略重复点击
+        pal = self.build_palette_list()
+        if not pal:
+            QMessageBox.information(self, '提示', '调色盘为空，请检查 palette.txt 或选择颜色')
+            return
+        # 缩放+抖动都放到后台线程执行，避免大图阻塞界面
+        settings = self._gather_settings()
+        self._was_preview = True
+        self._set_processing(True)
+        self._run_worker(self._dither_task, (self.original_image, pal, settings, True), self._on_process_done)
+
+    def on_save(self):
+        if not self.original_image:
+            QMessageBox.information(self, '提示', '请先选择图片')
+            return
+        if self._worker is not None and self._worker.isRunning():
             return
         pal = self.build_palette_list()
         if not pal:
             QMessageBox.information(self, '提示', '调色盘为空，请检查 palette.txt 或选择颜色')
             return
-        # Apply resize then dithering
-        img = self.apply_resize(self.original_image)
-        method = self.combo_dither.currentText()
-        try:
-            if method == '有序抖动':
-                strength = int(self.spin_strength.value())
-                color_space = self.combo_color_space.currentText()
-                matrix_method = self.combo_matrix.currentText()
+        # 保存时始终按完整尺寸处理（不缩略图），放到后台线程执行
+        settings = self._gather_settings()
+        self._was_preview = False
+        self._set_processing(True)
+        self._run_worker(self._dither_task, (self.original_image, pal, settings, False), self._on_save_done)
 
-                if color_space == 'HSV':
-                    weights = (
-                        float(self.spin_h_weight.value()),
-                        float(self.spin_s_weight.value()),
-                        float(self.spin_v_weight.value())
-                    )
-                    out = ordered_dithering(img, pal, method=matrix_method, strength=strength,
-                                            color_space=color_space, weights=weights)
-                else:
-                    out = ordered_dithering(img, pal, method=matrix_method, strength=strength,
-                                            color_space=color_space)
-            else:
-                alpha = float(self.spin_alpha.value())
-                out = floyd_steinberg_dither(img, pal, alpha_strength=alpha)
-            self.processed_image = out
-            self.display_mode = 1
-            self.show_image_in_label(self.processed_image)
-            self.statusBar().showMessage('已生成预览')
-        except Exception as e:
-            QMessageBox.warning(self, '处理失败', f'应用抖动失败: {e}')
-
-    def on_save(self):
-        if self.processed_image is None:
-            # try to generate preview automatically
-            self.on_preview()
-            if self.processed_image is None:
-                return
+    def _on_save_done(self, out):
+        self.processed_image = out
         folder = self.line_save.text().strip() or self.save_folder
         os.makedirs(folder, exist_ok=True)
         base = os.path.splitext(os.path.basename(self.image_path or 'result'))[0]
@@ -714,8 +949,12 @@ class ImageDitherApp(QMainWindow):
             i += 1
         try:
             self.processed_image.save(path)
+            self._set_processing(False)
+            self.statusBar().showMessage('已保存')
             QMessageBox.information(self, '已保存', f'已保存到 {path}')
         except Exception as e:
+            self._set_processing(False)
+            self.statusBar().clearMessage()
             QMessageBox.warning(self, '保存失败', f'保存失败: {e}')
 
     def on_preview_click(self, event):

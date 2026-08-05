@@ -7,7 +7,14 @@ __pycache__/
 
 # PyInstaller 打包输出目录
 pipinstaller/
+pipinstaller.rar
 
 # 测试数据
 test/
 save/
+test.png
+output_dither.png
+results/
+
+# 参考资料（非代码）
+论文/
