@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>调色板图像抖动工具</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>调色板图像抖动工具</h1>
+    <p class="sub">基于 63 色 weplace 调色板，把图片转成像素画风格（有序抖动 / 误差扩散 / 重心混合）</p>
+  </header>
+
+  <div class="container">
+    <div class="controls">
+      <div class="field">
+        <div id="dropZone">拖拽图片到这里，或点击选择</div>
+        <input type="file" id="fileInput" accept="image/*" style="display:none">
+      </div>
+
+      <div class="field">
+        <label>压缩比例（或直接指定尺寸）</label>
+        <div class="row">
+          <input type="range" id="compression" min="1" max="100" value="100" style="flex:1">
+          <input type="number" id="compNum" min="1" max="100" value="100" style="width:64px">
+          <span>%</span>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <input type="number" id="widthInput" placeholder="宽 px" min="1" style="flex:1; min-width:0">
+          <input type="number" id="heightInput" placeholder="高 px" min="1" style="flex:1; min-width:0">
+        </div>
+        <div class="hint">填宽或高 = 按比例；都填 = 强制尺寸；都不填 = 按压缩比例</div>
+      </div>
+
+      <div class="field">
+        <label>调色板（<span id="palCount">63</span>/63 选中，<span class="paid-mark">■</span> = 付费色）</label>
+        <div class="pal-buttons">
+          <button class="small" id="selAll" title="全部选中">全选</button>
+          <button class="small" id="selNone" title="全部取消">全不选</button>
+          <button class="small" id="selFree" title="只选免费色">选免费</button>
+          <button class="small" id="selPaid" title="只选付费色">选付费</button>
+        </div>
+        <div id="paletteSwatches"></div>
+      </div>
+
+      <div class="field">
+        <label>抖动方法</label>
+        <select id="method">
+          <option value="ordered">有序抖动</option>
+          <option value="error_diffusion">误差扩散</option>
+          <option value="barycentric" selected>重心混合</option>
+        </select>
+      </div>
+
+      <!-- 有序抖动参数 -->
+      <div id="orderedParams" class="params hidden">
+        <div class="field">
+          <label>强度 <span id="strengthVal">64</span></label>
+          <input type="range" id="strength" min="0" max="128" value="64">
+        </div>
+        <div class="field">
+          <label>色彩空间</label>
+          <select id="colorSpace"><option>RGB</option><option>Lab</option></select>
+        </div>
+        <div class="field">
+          <label>阈值矩阵</label>
+          <select id="matrix"><option>bayer</option><option>clustered</option><option>diagonal</option><option>spiral</option></select>
+        </div>
+      </div>
+
+      <!-- 误差扩散参数 -->
+      <div id="edParams" class="params hidden">
+        <div class="field">
+          <label>滤波核</label>
+          <select id="filter"><option>FS</option><option>Jarvis</option><option>Stucki</option></select>
+        </div>
+        <div class="field">
+          <label>alpha <span id="alphaVal">1.00</span></label>
+          <input type="range" id="alpha" min="0" max="1" step="0.05" value="1">
+        </div>
+      </div>
+
+      <!-- 重心混合参数 -->
+      <div id="baryParams" class="params">
+        <div class="field">
+          <label>阈值矩阵</label>
+          <select id="baryMatrix"><option>bayer</option><option>clustered</option><option>diagonal</option><option>spiral</option></select>
+        </div>
+        <div class="field">
+          <label>扰动强度 <span id="baryStrengthVal">64</span></label>
+          <input type="range" id="baryStrength" min="0" max="128" value="64">
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="gamut"> 凸包投影（改善饱和色）</label>
+        </div>
+        <div class="field">
+          <label>权重截断 <span id="minWeightVal">0.00</span>（缓解弥散）</label>
+          <input type="range" id="minWeight" min="0" max="0.5" step="0.05" value="0">
+        </div>
+        <div class="field">
+          <label>边缘保护阈值 <span id="edgeGuardVal">0</span></label>
+          <input type="range" id="edgeGuard" min="0" max="50" value="0">
+        </div>
+      </div>
+
+      <div class="buttons">
+        <button id="processBtn">处理</button>
+        <button id="downloadBtn">下载结果</button>
+      </div>
+    </div>
+
+    <div class="preview">
+      <div class="panel"><h3>原图</h3><canvas id="srcCanvas"></canvas></div>
+      <div class="panel"><h3>结果</h3><canvas id="dstCanvas"></canvas></div>
+    </div>
+  </div>
+
+  <script src="delaunay.js"></script>
+  <script src="dither.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,87 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  background: #14141f;
+  color: #e8e8f0;
+}
+header {
+  padding: 14px 20px;
+  background: #1d1d33;
+  border-bottom: 1px solid #2c2c44;
+}
+header h1 { font-size: 20px; }
+header .sub { font-size: 12px; color: #9a9ab0; margin-top: 4px; }
+
+.container { display: flex; gap: 20px; padding: 20px; align-items: flex-start; }
+.controls {
+  width: 350px; flex-shrink: 0;
+  background: #20203a;
+  padding: 18px;
+  border-radius: 10px;
+  border: 1px solid #2c2c44;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+.field { margin: 12px 0; }
+.field label { display: block; margin-bottom: 5px; font-size: 13px; color: #b0b0c8; }
+.field input[type="range"] { width: 100%; accent-color: #6a9fff; }
+.field input[type="checkbox"] { accent-color: #6a9fff; }
+select {
+  width: 100%; padding: 6px;
+  background: #2a2a46; color: #eee;
+  border: 1px solid #3a3a5a; border-radius: 4px;
+}
+.hidden { display: none; }
+
+#paletteSwatches { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; }
+.swatch {
+  width: 16px; height: 16px;
+  border-radius: 2px;
+  border: 1px solid #3a3a55;
+  cursor: default;
+}
+.swatch.paid { box-shadow: inset 0 0 0 2px #f5a623; }
+.swatch.off { opacity: 0.22; }
+.swatch:hover { outline: 2px solid #6a9fff; }
+.paid-mark { color: #f5a623; }
+.pal-buttons { display: flex; gap: 4px; margin: 6px 0; }
+button.small { flex: 1; padding: 5px; font-size: 12px; background: #33436e; }
+button.small:hover { background: #43548a; }
+
+.row { display: flex; gap: 6px; align-items: center; }
+.row input[type="number"] {
+  background: #2a2a46; color: #eee;
+  border: 1px solid #3a3a5a; border-radius: 4px; padding: 5px;
+}
+.hint { font-size: 11px; color: #7a7a92; margin-top: 4px; }
+
+#dropZone {
+  border: 2px dashed #4a4a6a;
+  padding: 22px 10px;
+  text-align: center;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #8a8aa0;
+  font-size: 13px;
+}
+#dropZone:hover { border-color: #6a9fff; color: #c0c0d8; }
+
+.buttons { display: flex; gap: 8px; margin-top: 12px; }
+button {
+  flex: 1; padding: 9px;
+  background: #4a7fd9; border: none; color: #fff;
+  border-radius: 5px; cursor: pointer; font-size: 14px;
+}
+button:hover { background: #5a8fe9; }
+button:disabled { opacity: 0.5; cursor: wait; }
+
+.preview { flex: 1; display: flex; gap: 16px; min-width: 0; }
+.panel { flex: 1; min-width: 0; }
+.panel h3 { font-size: 14px; margin-bottom: 8px; color: #c0c0d8; }
+canvas {
+  width: 100%;
+  background: #101018;
+  border: 1px solid #33334f;
+  border-radius: 4px;
+  image-rendering: pixelated;
+}
