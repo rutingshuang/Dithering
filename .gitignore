@@ -18,3 +18,9 @@ results/
 
 # 参考资料（非代码）
 论文/
+
+# 打包残留
+GUI.exe
+Dithering.rar
+import_test.spec
+pipinstaller.rar
