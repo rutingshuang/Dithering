@@ -500,10 +500,229 @@ function barycentricDither(img, palette, D, opts) {
   return { width, height, data: out };
 }
 
+// ============================================================
+// 分层投影混色（与 Python layered_dither.py 的 layered_projection_dither 对应）
+//
+// 两步分离：
+//   1. 投影：按明暗分层，每层聚类出 K 个投影色（可不在调色板内），像素投影到最近的
+//      那个 —— 每层只有几种颜色，大片区域同色
+//   2. 抖动：对每个投影色单独求"用调色板色把它混出来"的权重（四面体重心 / 凸包投影），
+//      再按图案阈值分配 —— 输出全部落在调色板内，同一投影色的图案完全一致
+// 色差由第 1 步的投影质量决定（层数、每层色数），第 2 步只负责忠实还原。
+// ============================================================
+
+// 确定性伪随机（保证同一参数出同一结果）
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// CIELAB → sRGB（0-255），用于把 Lab 空间聚出的投影色转回 RGB
+function labToRgb(lab) {
+  const fy = (lab[0] + 16) / 116;
+  const fx = fy + lab[1] / 500;
+  const fz = fy - lab[2] / 200;
+  const finv = t => { const t3 = t * t * t; return t3 > 0.008856 ? t3 : (t - 16 / 116) / 7.787; };
+  const x = 0.95047 * finv(fx), y = finv(fy), z = 1.08883 * finv(fz);
+  let r = x * 3.2406 + y * -1.5372 + z * -0.4986;
+  let g = x * -0.9689 + y * 1.8758 + z * 0.0415;
+  let b = x * 0.0557 + y * -0.2040 + z * 1.0570;
+  const enc = c => c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(Math.max(c, 0), 1 / 2.4) - 0.055;
+  return [Math.min(255, Math.max(0, enc(r) * 255)),
+          Math.min(255, Math.max(0, enc(g) * 255)),
+          Math.min(255, Math.max(0, enc(b) * 255))];
+}
+
+// k-means++ 初始化 + Lloyd 迭代（在给定空间里），返回 K 个中心
+function kmeans(samples, K, seed, iters) {
+  const N = samples.length;
+  K = Math.max(1, Math.min(K, N));
+  const rng = mulberry32(seed);
+  const centers = [samples[(rng() * N) | 0].slice()];
+  const tmp = new Float64Array(N);
+  while (centers.length < K) {
+    let sum = 0;
+    for (let i = 0; i < N; i++) {
+      let d = Infinity;
+      for (let j = 0; j < centers.length; j++) {
+        const c = centers[j], p = samples[i];
+        const dd = (p[0] - c[0]) ** 2 + (p[1] - c[1]) ** 2 + (p[2] - c[2]) ** 2;
+        if (dd < d) d = dd;
+      }
+      tmp[i] = d; sum += d;
+    }
+    let r = rng() * sum, pick = N - 1;
+    for (let i = 0; i < N; i++) { r -= tmp[i]; if (r <= 0) { pick = i; break; } }
+    centers.push(samples[pick].slice());
+  }
+  const assign = new Int32Array(N).fill(-1);
+  const sums = Array.from({ length: K }, () => [0, 0, 0, 0]);
+  for (let it = 0; it < iters; it++) {
+    let moved = false;
+    for (let i = 0; i < N; i++) {
+      const p = samples[i];
+      let bi = 0, bd = Infinity;
+      for (let j = 0; j < K; j++) {
+        const c = centers[j];
+        const d = (p[0] - c[0]) ** 2 + (p[1] - c[1]) ** 2 + (p[2] - c[2]) ** 2;
+        if (d < bd) { bd = d; bi = j; }
+      }
+      if (assign[i] !== bi) { assign[i] = bi; moved = true; }
+    }
+    for (let j = 0; j < K; j++) { sums[j][0] = sums[j][1] = sums[j][2] = sums[j][3] = 0; }
+    for (let i = 0; i < N; i++) {
+      const s = sums[assign[i]], p = samples[i];
+      s[0] += p[0]; s[1] += p[1]; s[2] += p[2]; s[3]++;
+    }
+    for (let j = 0; j < K; j++) {
+      if (sums[j][3] > 0) {
+        centers[j] = [sums[j][0] / sums[j][3], sums[j][1] / sums[j][3], sums[j][2] / sums[j][3]];
+      }
+    }
+    if (!moved) break;
+  }
+  return centers;
+}
+
+// 求"用调色板色混合出目标色 p"的权重：返回 { idx:[调色板下标...], w:[权重...] }
+// 目标色在凸包内 → 四面体重心坐标；在凸包外 → 投影到凸包表面取该面重心坐标
+function mixWeights(p, D) {
+  const gsize = D.gridSize, step = 256 / gsize;
+  let t = -1, w = null;
+  if (D.grid) {
+    const c0 = Math.min(gsize - 1, Math.max(0, (p[0] / step) | 0));
+    const c1 = Math.min(gsize - 1, Math.max(0, (p[1] / step) | 0));
+    const c2 = Math.min(gsize - 1, Math.max(0, (p[2] / step) | 0));
+    t = D.grid[(c0 * gsize + c1) * gsize + c2];
+    if (t >= 0) {
+      w = matVec4(D.ainv[t], [p[0], p[1], p[2], 1.0]);
+      if (w[0] < BARY_EPS || w[1] < BARY_EPS || w[2] < BARY_EPS || w[3] < BARY_EPS) {
+        t = findContaining(p, D);
+        if (t >= 0) w = matVec4(D.ainv[t], [p[0], p[1], p[2], 1.0]);
+      }
+    } else {
+      t = findContaining(p, D);
+      if (t >= 0) w = matVec4(D.ainv[t], [p[0], p[1], p[2], 1.0]);
+    }
+  } else {
+    t = findContaining(p, D);
+    if (t >= 0) w = matVec4(D.ainv[t], [p[0], p[1], p[2], 1.0]);
+  }
+  if (t >= 0) {
+    let sum = 0;
+    const ww = [];
+    for (let k = 0; k < 4; k++) { const x = Math.max(0, w[k]); ww.push(x); sum += x; }
+    if (sum <= 0) return { idx: D.tetras[t], w: [0.25, 0.25, 0.25, 0.25] };
+    return { idx: D.tetras[t], w: ww.map(v => v / sum) };
+  }
+  const pr = projectToHull(p, D);
+  let sum = 0;
+  const ww = [];
+  for (let k = 0; k < 3; k++) { const x = Math.max(0, pr.w[k]); ww.push(x); sum += x; }
+  if (sum <= 0) return { idx: pr.idx, w: [1 / 3, 1 / 3, 1 / 3] };
+  return { idx: pr.idx, w: ww.map(v => v / sum) };
+}
+
+function projectionDither(img, palette, D, opts) {
+  opts = opts || {};
+  const { width, height, data } = img;
+  const npix = width * height;
+  const nBands = Math.max(2, Math.min(64, opts.bands ?? 24));
+  const K = Math.max(2, Math.min(32, opts.colors ?? 8));
+  const useLab = (opts.clusterSpace || 'Lab') === 'Lab';
+  const mat = DITHER_MATRICES[opts.matrix || 'bayer'];
+  const { m, ths } = matrixVals(mat, 0);
+  const out = new Uint8ClampedArray(data.length);
+
+  // ---- 每个像素的明度 L*，以及（可选）Lab 缓存 ----
+  const luma = new Float32Array(npix);
+  const labCache = new Float32Array(npix * 3);
+  const opaque = new Uint8Array(npix);
+  for (let i = 0; i < npix; i++) {
+    const o = i * 4;
+    out[i * 4 + 3] = data[o + 3];
+    if (data[o + 3] === 0) { out[o + 3] = 0; continue; }
+    opaque[i] = 1;
+    const lab = rgbToLab([data[o], data[o + 1], data[o + 2]]);
+    luma[i] = lab[0] / 100;
+    labCache[i * 3] = lab[0]; labCache[i * 3 + 1] = lab[1]; labCache[i * 3 + 2] = lab[2];
+  }
+
+  // ---- 分层边界：linear 按明度等分（保色彩）/ quantile 按图像分布等频（保细节）----
+  const edges = new Float64Array(nBands + 1);
+  if (opts.edgeMode === 'quantile') {
+    const sorted = Float32Array.from(luma).sort();
+    for (let k = 0; k <= nBands; k++) {
+      const idx = Math.min(npix - 1, Math.max(0, Math.round(k / nBands * (npix - 1))));
+      edges[k] = sorted[idx];
+    }
+    edges[0] = 0; edges[nBands] = 1;
+    for (let k = 1; k <= nBands; k++) if (edges[k] < edges[k - 1]) edges[k] = edges[k - 1];
+  } else {
+    for (let k = 0; k <= nBands; k++) edges[k] = k / nBands;
+  }
+
+  // ---- 按层分桶（一次遍历，避免每层重扫全图）----
+  const buckets = Array.from({ length: nBands }, () => []);
+  for (let i = 0; i < npix; i++) {
+    if (!opaque[i]) continue;
+    let b = 0;
+    while (b < nBands - 1 && luma[i] >= edges[b + 1]) b++;
+    buckets[b].push(i);
+  }
+
+  const SAMPLE = 2000;
+  for (let b = 0; b < nBands; b++) {
+    const members = buckets[b];
+    if (!members.length) continue;
+
+    // ---- 第 1 步：聚类投影色 ----
+    const step = Math.max(1, Math.floor(members.length / SAMPLE));
+    const samples = [];
+    for (let i = 0; i < members.length; i += step) {
+      const p = members[i];
+      samples.push(useLab
+        ? [labCache[p * 3], labCache[p * 3 + 1], labCache[p * 3 + 2]]
+        : [data[p * 4], data[p * 4 + 1], data[p * 4 + 2]]);
+    }
+    const centers = kmeans(samples, K, b * 7919 + 13, 20);
+    const projRGB = centers.map(c => useLab ? labToRgb(c) : c);
+
+    // ---- 第 2 步：每个投影色单独求混合权重（同一权重负责该颜色的全部像素）----
+    const mixes = projRGB.map(c => mixWeights(c, D));
+
+    // ---- 投影分配 + 阈值选色 ----
+    for (const p of members) {
+      const o = p * 4;
+      const r = data[o], g = data[o + 1], bl = data[o + 2];
+      let bj = 0, bd = Infinity;
+      for (let j = 0; j < projRGB.length; j++) {
+        const c = projRGB[j];
+        const d = (r - c[0]) ** 2 + (g - c[1]) ** 2 + (bl - c[2]) ** 2;
+        if (d < bd) { bd = d; bj = j; }
+      }
+      const mx = mixes[bj];
+      const tt = ths[((p / width | 0) % m) * m + (p % width) % m];
+      let acc = 0, sel = mx.w.length - 1;
+      for (let k = 0; k < mx.w.length; k++) { acc += mx.w[k]; if (acc >= tt) { sel = k; break; } }
+      const c = D.palette[mx.idx[sel]];
+      out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; out[o + 3] = 255;
+    }
+  }
+  // 透明像素
+  for (let i = 0; i < npix; i++) if (!opaque[i]) { out[i * 4 + 3] = 0; }
+  return { width, height, data: out };
+}
+
 // 统一入口
 function runDither(img, method, palette, D, opts) {
   if (method === 'ordered') return orderedDither(img, palette, opts);
   if (method === 'error_diffusion') return errorDiffusion(img, palette, opts);
   if (method === 'barycentric') return barycentricDither(img, palette, D, opts);
+  if (method === 'projection') return projectionDither(img, palette, D, opts);
   throw new Error('未知方法: ' + method);
 }

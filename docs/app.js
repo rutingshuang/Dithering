@@ -64,6 +64,7 @@ function updateParams() {
   $('orderedParams').classList.toggle('hidden', m !== 'ordered');
   $('edParams').classList.toggle('hidden', m !== 'error_diffusion');
   $('baryParams').classList.toggle('hidden', m !== 'barycentric');
+  $('projParams').classList.toggle('hidden', m !== 'projection');
 }
 
 // ---------- 滑块数值显示 + 自动处理（防抖） ----------
@@ -81,6 +82,9 @@ bindRange('alpha', 'alphaVal');
 bindRange('baryStrength', 'baryStrengthVal');
 bindRange('minWeight', 'minWeightVal');
 bindRange('edgeGuard', 'edgeGuardVal');
+['projBands', 'projColors'].forEach(id => {
+  $(id).addEventListener('input', scheduleProcess);
+});
 
 // 压缩：滑块 ↔ 数字输入 双向同步；调 % 时清空宽高（避免冲突）
 function clearWH() { $('widthInput').value = ''; $('heightInput').value = ''; }
@@ -115,7 +119,7 @@ function syncCompFromWH() {
 ['widthInput', 'heightInput'].forEach(id => {
   $(id).addEventListener('input', () => { syncCompFromWH(); scheduleProcess(); });
 });
-['colorSpace', 'matrix', 'filter', 'baryMatrix'].forEach(id => {
+['colorSpace', 'matrix', 'filter', 'baryMatrix', 'projEdge', 'projSpace', 'projMatrix'].forEach(id => {
   $(id).addEventListener('change', scheduleProcess);
 });
 
@@ -202,6 +206,15 @@ function gatherOpts() {
   if (m === 'error_diffusion') {
     return { filter: $('filter').value, alpha: +$('alpha').value };
   }
+  if (m === 'projection') {
+    return {
+      bands: Math.max(2, Math.min(64, +$('projBands').value || 24)),
+      colors: Math.max(2, Math.min(32, +$('projColors').value || 8)),
+      edgeMode: $('projEdge').value,
+      clusterSpace: $('projSpace').value,
+      matrix: $('projMatrix').value,
+    };
+  }
   return {
     matrix: $('baryMatrix').value,
     strength: +$('baryStrength').value,
@@ -211,6 +224,9 @@ function gatherOpts() {
   };
 }
 
+// 需要 Delaunay 数据的方法（全选时用离线预计算，子集时运行时构建）
+function needsBaryData(m) { return m === 'barycentric' || m === 'projection'; }
+
 function doProcess() {
   if (!srcData) return;
   $('processBtn').disabled = true;
@@ -219,7 +235,7 @@ function doProcess() {
     try {
       const opts = gatherOpts();
       const sel = getSelectedPalette();
-      if ($('method').value === 'barycentric') ensureBaryData();
+      if (needsBaryData($('method').value)) ensureBaryData();
       // 压缩/指定尺寸：处理前缩放源图
       const [tw, th] = computeTarget(srcData.width, srcData.height);
       const src = resizeData(srcData, tw, th);
