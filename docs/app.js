@@ -264,3 +264,27 @@ $('downloadBtn').addEventListener('click', () => {
 });
 
 updateParams();
+
+// ---------- 资源版本自检：发现服务器上有新版本就自动刷新 ----------
+// GitHub Pages 对 HTML/JS 都有缓存，改完代码访客常看到旧版（典型症状是"选项是新的
+// 但处理报未知方法"）。这里在页面重新可见时比对一次版本号，不同就自动重载。
+(function autoReloadOnUpdate() {
+  const tag = document.querySelector('script[src*="dither.js"]');
+  const cur = tag && (tag.src.match(/[?&]v=([^&"']+)/) || [])[1];
+  if (!cur) return;                        // 没有版本号则不做自检
+  let reloading = false;
+  async function check() {
+    if (reloading) return;
+    try {
+      const r = await fetch(location.pathname + '?_=' + Date.now(), { cache: 'no-store' });
+      const html = await r.text();
+      const m = html.match(/dither\.js\?v=([^"&']+)/);
+      if (m && m[1] !== cur) {
+        reloading = true;
+        location.reload();
+      }
+    } catch (e) { /* 离线或网络异常，静默忽略 */ }
+  }
+  // 页面从后台切回前台时检查，避免打断正在进行的处理
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+})();
