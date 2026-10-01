@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
-  <link rel="stylesheet" href="style.css?v=784d92ab">
+  <link rel="stylesheet" href="style.css?v=67b92a51">
 </head>
 <body>
   <header>
@@ -12,7 +12,12 @@
     <p class="sub">基于 63 色 weplace 调色板，把图片转成像素画风格（分层投影混色 / 重心混合 / 有序抖动 / 误差扩散）</p>
   </header>
 
-  <div class="container">
+  <nav class="tabs">
+    <button class="tab active" data-tab="image">图像抖动</button>
+    <button class="tab" data-tab="text">汉字像素图</button>
+  </nav>
+
+  <div class="container" id="panel-image">
     <div class="controls">
       <div class="field">
         <div id="dropZone">拖拽图片到这里，或点击选择</div>
@@ -150,8 +155,103 @@
     </div>
   </div>
 
-  <script src="delaunay.js?v=784d92ab"></script>
-  <script src="dither.js?v=784d92ab"></script>
-  <script src="app.js?v=784d92ab"></script>
+  <!-- ===================== 汉字像素图 ===================== -->
+  <div class="container hidden" id="panel-text">
+    <div class="controls">
+      <div class="field">
+        <label>文字（回车手动换行）</label>
+        <textarea id="txtInput" rows="4" spellcheck="false">你好世界</textarea>
+      </div>
+
+      <div class="field">
+        <label>字体</label>
+        <select id="txtFont"></select>
+        <div class="row" style="margin-top:6px">
+          <button class="small" id="txtFontUpload">载入字体文件…</button>
+          <span class="hint" id="txtFontName" style="margin:0"></span>
+        </div>
+        <input type="file" id="txtFontFile" accept=".ttf,.otf,.woff,.woff2" style="display:none">
+      </div>
+
+      <div class="field">
+        <label>字号（像素高度）<span id="txtSizeVal">16</span> px</label>
+        <div class="row">
+          <input type="range" id="txtSizeRange" min="6" max="64" value="16" style="flex:1">
+          <input type="number" id="txtSize" min="6" max="64" value="16" style="width:64px">
+        </div>
+        <div class="hint">建议 ≥12px：普通字体在更小的字号下会糊成一团；想要更小的像素字，
+          用下面的「载入字体文件…」挂一个专门的像素字体</div>
+      </div>
+
+      <div class="field">
+        <label>换行方式</label>
+        <select id="txtWrap">
+          <option value="manual">手动（只按回车）</option>
+          <option value="auto">自动（按每行字数）</option>
+        </select>
+        <div class="row hidden" id="wrapRow" style="margin-top:6px">
+          <span class="hint" style="margin:0">每行最多</span>
+          <input type="number" id="txtWrapChars" min="1" max="64" value="8" style="width:64px">
+          <span class="hint" style="margin:0">个全角字</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>行距 <span id="txtGapVal">1</span> px</label>
+        <input type="range" id="txtGap" min="0" max="16" value="1">
+      </div>
+
+      <div class="field">
+        <label>前景色（点下方色块可快速取调色板的颜色）</label>
+        <div class="row">
+          <input type="color" id="txtColor" value="#ffffff">
+          <span class="hint" id="txtColorHex" style="margin:0">#ffffff</span>
+        </div>
+        <div id="txtPalette" class="palette-mini"></div>
+      </div>
+
+      <div class="field">
+        <label>背景色</label>
+        <div class="row">
+          <input type="color" id="txtBg" value="#000000">
+          <label class="inline"><input type="checkbox" id="txtBgTransparent"> 透明背景</label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>边缘阈值 <span id="txtThrVal">128</span>（越小笔画越粗、越大越细）</label>
+        <input type="range" id="txtThr" min="1" max="254" value="128">
+      </div>
+
+      <div class="field">
+        <label>导出放大倍数</label>
+        <select id="txtScale">
+          <option value="1">1x（原始像素）</option>
+          <option value="2">2x</option>
+          <option value="4" selected>4x</option>
+          <option value="8">8x</option>
+        </select>
+      </div>
+
+      <div class="buttons">
+        <button id="txtDownload">下载 PNG</button>
+      </div>
+      <div class="hint">
+        输出是逐像素的位图（抗锯齿边缘已按阈值二值化）；预览按最近邻放大，不会糊。
+      </div>
+    </div>
+
+    <div class="preview">
+      <div class="panel">
+        <h3>像素图 <span id="txtDims" class="hint" style="margin:0"></span></h3>
+        <canvas id="txtCanvas"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script src="delaunay.js?v=67b92a51"></script>
+  <script src="dither.js?v=67b92a51"></script>
+  <script src="textpixel.js?v=67b92a51"></script>
+  <script src="app.js?v=67b92a51"></script>
 </body>
 </html>

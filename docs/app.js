@@ -265,6 +265,17 @@ $('downloadBtn').addEventListener('click', () => {
 
 updateParams();
 
+// ---------- 页签切换：图像抖动 / 汉字像素图 ----------
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const t = btn.dataset.tab;
+    document.getElementById('panel-image').classList.toggle('hidden', t !== 'image');
+    document.getElementById('panel-text').classList.toggle('hidden', t !== 'text');
+  });
+});
+
 // ---------- 资源版本自检：发现服务器上有新版本就自动刷新 ----------
 // GitHub Pages 对 HTML/JS 都有缓存，改完代码访客常看到旧版（典型症状是"选项是新的
 // 但处理报未知方法"）。这里在页面重新可见时比对一次版本号，不同就自动重载。

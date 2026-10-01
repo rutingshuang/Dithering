@@ -85,3 +85,51 @@ canvas {
   border-radius: 4px;
   image-rendering: pixelated;
 }
+
+/* ---------- 页签 ---------- */
+.tabs { display: flex; gap: 6px; padding: 12px 20px 0; }
+.tab {
+  flex: 0 0 auto;
+  padding: 8px 18px;
+  background: #20203a;
+  border: 1px solid #2c2c44;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  color: #9a9ab0;
+  font-size: 14px;
+  cursor: pointer;
+}
+.tab:hover { color: #d0d0e4; background: #262640; }
+.tab.active { background: #191926; color: #e8e8f0; }
+
+/* ---------- 汉字像素图 ---------- */
+textarea {
+  width: 100%;
+  background: #2a2a46; color: #eee;
+  border: 1px solid #3a3a5a; border-radius: 4px;
+  padding: 7px 9px;
+  font-family: inherit; font-size: 13px; line-height: 1.6;
+  resize: vertical;
+}
+textarea:focus, select:focus { outline: 1px solid #6a9fff; }
+.field input[type="color"] {
+  width: 48px; height: 28px; padding: 0;
+  background: #2a2a46;
+  border: 1px solid #3a3a5a; border-radius: 4px;
+  cursor: pointer;
+}
+label.inline {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; color: #b0b0c8; margin: 0; cursor: pointer;
+}
+.palette-mini {
+  display: flex; flex-wrap: wrap; gap: 2px;
+  margin-top: 6px; max-height: 76px; overflow-y: auto;
+}
+.pswatch {
+  width: 14px; height: 14px;
+  border-radius: 2px; border: 1px solid #3a3a55;
+  cursor: pointer;
+}
+.pswatch:hover { outline: 2px solid #6a9fff; }
+#txtCanvas { background: #101018; width: auto; max-width: 100%; }
