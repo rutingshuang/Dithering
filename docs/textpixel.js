@@ -242,5 +242,14 @@
     a.click();
   });
 
+  // 透明模式下背景色选择器没有意义，灰掉避免困惑
+  function syncBgEnable() {
+    const t = $('txtBgTransparent').checked;
+    $('txtBg').disabled = t;
+    $('txtBg').style.opacity = t ? 0.35 : 1;
+  }
+  $('txtBgTransparent').addEventListener('change', syncBgEnable);
+
   render();
+  syncBgEnable();
 })();

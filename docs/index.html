@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
-  <link rel="stylesheet" href="style.css?v=67b92a51">
+  <link rel="stylesheet" href="style.css?v=7ad9a179">
 </head>
 <body>
   <header>
@@ -214,8 +214,9 @@
         <label>背景色</label>
         <div class="row">
           <input type="color" id="txtBg" value="#000000">
-          <label class="inline"><input type="checkbox" id="txtBgTransparent"> 透明背景</label>
+          <label class="inline"><input type="checkbox" id="txtBgTransparent" checked> 透明背景</label>
         </div>
+        <div class="hint">勾选透明后，导出的 PNG 带 alpha 通道；预览里的棋盘格就是透明区域</div>
       </div>
 
       <div class="field">
@@ -249,9 +250,9 @@
     </div>
   </div>
 
-  <script src="delaunay.js?v=67b92a51"></script>
-  <script src="dither.js?v=67b92a51"></script>
-  <script src="textpixel.js?v=67b92a51"></script>
-  <script src="app.js?v=67b92a51"></script>
+  <script src="delaunay.js?v=7ad9a179"></script>
+  <script src="dither.js?v=7ad9a179"></script>
+  <script src="textpixel.js?v=7ad9a179"></script>
+  <script src="app.js?v=7ad9a179"></script>
 </body>
 </html>
