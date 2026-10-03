@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
-  <link rel="stylesheet" href="style.css?v=7ad9a179">
+  <link rel="stylesheet" href="style.css?v=8839e0b1">
 </head>
 <body>
   <header>
@@ -207,7 +207,17 @@
           <input type="color" id="txtColor" value="#ffffff">
           <span class="hint" id="txtColorHex" style="margin:0">#ffffff</span>
         </div>
+        <div class="row" style="margin-top:6px">
+          <select id="txtPalGroup">
+            <option value="all">调色板：全部 63 色</option>
+            <option value="gray">黑白灰（6 色，低字号最清晰）</option>
+            <option value="free">免费色（不含付费色）</option>
+            <option value="paid">付费色</option>
+          </select>
+        </div>
         <div id="txtPalette" class="palette-mini"></div>
+        <div class="hint">想生成「只用免费色」的方案：这里切到免费色取前景，
+          再把背景色也设成免费色即可</div>
       </div>
 
       <div class="field">
@@ -220,8 +230,20 @@
       </div>
 
       <div class="field">
-        <label>边缘阈值 <span id="txtThrVal">128</span>（越小笔画越粗、越大越细）</label>
-        <input type="range" id="txtThr" min="1" max="254" value="128">
+        <label>边缘阈值 <span id="txtThrVal">64</span>（越小笔画越粗、越大越细）</label>
+        <input type="range" id="txtThr" min="1" max="254" value="64">
+        <div class="hint">小字号建议 50~80 保住细笔画；大字号可用 128~160</div>
+      </div>
+
+      <div class="field">
+        <label>超采样</label>
+        <select id="txtSupersample">
+          <option value="1">1x（关闭）</option>
+          <option value="2">2x</option>
+          <option value="4" selected>4x（推荐）</option>
+          <option value="8">8x（最精细，较慢）</option>
+        </select>
+        <div class="hint">先在高分辨率渲染再降采样，低字号下笔画覆盖率估得更准、更完整</div>
       </div>
 
       <div class="field">
@@ -250,9 +272,9 @@
     </div>
   </div>
 
-  <script src="delaunay.js?v=7ad9a179"></script>
-  <script src="dither.js?v=7ad9a179"></script>
-  <script src="textpixel.js?v=7ad9a179"></script>
-  <script src="app.js?v=7ad9a179"></script>
+  <script src="delaunay.js?v=8839e0b1"></script>
+  <script src="dither.js?v=8839e0b1"></script>
+  <script src="textpixel.js?v=8839e0b1"></script>
+  <script src="app.js?v=8839e0b1"></script>
 </body>
 </html>

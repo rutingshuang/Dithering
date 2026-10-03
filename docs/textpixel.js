@@ -60,46 +60,76 @@
   }
 
   // ---------- 渲染 ----------
+  // 关键：先在 size×SS 的高分辨率上渲染，再按 SS×SS 子块求平均覆盖率降到目标尺寸。
+  // 低字号下普通字体笔画很细，抗锯齿后边缘覆盖度只有三四成，直接在小尺寸上按
+  // 阈值二值化会把笔画砍断；超采样让覆盖率估得准，配合较低阈值就能保住笔画。
   function renderTextPixel(o) {
+    const SS = Math.max(1, Math.min(8, o.supersample || 4));
+    const hiSize = o.size * SS;
+
     const probe = document.createElement('canvas').getContext('2d');
-    probe.font = o.size + 'px ' + o.fontFamily;
+    probe.font = hiSize + 'px ' + o.fontFamily;
     const lines = layoutLines(probe, o.text, o.wrapMode, o.wrapChars);
     if (!lines.length) return null;
 
-    // 用字体实际 ascent/descent 定行高：汉字在 'top' 基线 + 行高=字号 的算法下
-    // 上下沿容易被裁掉，按度量算才稳
+    // 用字体实际 ascent/descent 定行高，避免汉字上下沿被裁掉
     const fm = probe.measureText('中');
-    const ascent = fm.fontBoundingBoxAscent || o.size * 0.88;
-    const descent = fm.fontBoundingBoxDescent || o.size * 0.18;
-    const lineH = Math.ceil(ascent + descent) + o.gap;
+    const ascent = fm.fontBoundingBoxAscent || hiSize * 0.88;
+    const descent = fm.fontBoundingBoxDescent || hiSize * 0.18;
+    const gapHi = o.gap * SS;
+    const lineH = Math.ceil(ascent + descent) + gapHi;
     let maxW = 1;
     for (const l of lines) maxW = Math.max(maxW, probe.measureText(l).width);
-    const W = Math.max(1, Math.ceil(maxW));
-    const H = Math.max(1, lines.length * lineH - o.gap);
+    const W_hi = Math.max(1, Math.ceil(maxW));
+    const H_hi = Math.max(1, lines.length * lineH - gapHi);
 
+    // 高分辨率绘制（透明底，alpha 即笔画覆盖度；颜色在此步无关紧要）
+    const hi = document.createElement('canvas');
+    hi.width = W_hi; hi.height = H_hi;
+    const hctx = hi.getContext('2d', { willReadFrequently: true });
+    hctx.font = hiSize + 'px ' + o.fontFamily;
+    hctx.textBaseline = 'alphabetic';
+    hctx.fillStyle = '#000';
+    lines.forEach((l, i) => hctx.fillText(l, 0, i * lineH + ascent));
+    const hiData = hctx.getImageData(0, 0, W_hi, H_hi).data;
+
+    // 降到目标尺寸：每个像素取 SS×SS 子块的平均覆盖率
+    const W = Math.max(1, Math.ceil(W_hi / SS));
+    const H = Math.max(1, Math.ceil(H_hi / SS));
     const cv = document.createElement('canvas');
     cv.width = W; cv.height = H;
-    const ctx = cv.getContext('2d', { willReadFrequently: true });
-    ctx.font = o.size + 'px ' + o.fontFamily;
-    ctx.textBaseline = 'alphabetic';
-    ctx.fillStyle = o.color;
-    // 先画在透明底上：这样 alpha 通道正好是笔画的覆盖度，便于阈值二值化
-    lines.forEach((l, i) => ctx.fillText(l, 0, i * lineH + ascent));
-
-    const img = ctx.getImageData(0, 0, W, H);
-    const d = img.data;
+    const ctx = cv.getContext('2d');
+    const out = ctx.createImageData(W, H);
+    const d = out.data;
     const fg = hexToRgb(o.color);
     const bg = hexToRgb(o.bg);
-    for (let i = 0; i < d.length; i += 4) {
-      if (d[i + 3] >= o.threshold) {          // 达到覆盖阈值 → 硬边前景色
-        d[i] = fg[0]; d[i + 1] = fg[1]; d[i + 2] = fg[2]; d[i + 3] = 255;
-      } else if (o.bgTransparent) {
-        d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 0;
-      } else {
-        d[i] = bg[0]; d[i + 1] = bg[1]; d[i + 2] = bg[2]; d[i + 3] = 255;
+
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        let sum = 0, cnt = 0;
+        for (let dy = 0; dy < SS; dy++) {
+          const sy = y * SS + dy;
+          if (sy >= H_hi) break;
+          const row = sy * W_hi;
+          for (let dx = 0; dx < SS; dx++) {
+            const sx = x * SS + dx;
+            if (sx >= W_hi) break;
+            sum += hiData[(row + sx) * 4 + 3];
+            cnt++;
+          }
+        }
+        const cov = cnt ? sum / cnt : 0;
+        const i = (y * W + x) * 4;
+        if (cov >= o.threshold) {
+          d[i] = fg[0]; d[i + 1] = fg[1]; d[i + 2] = fg[2]; d[i + 3] = 255;
+        } else if (o.bgTransparent) {
+          d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 0;
+        } else {
+          d[i] = bg[0]; d[i + 1] = bg[1]; d[i + 2] = bg[2]; d[i + 3] = 255;
+        }
       }
     }
-    ctx.putImageData(img, 0, 0);
+    ctx.putImageData(out, 0, 0);
     return cv;
   }
 
@@ -124,18 +154,39 @@
     fontSel.appendChild(o);
   });
 
-  // 调色板色块：点一下取该色为前景色
-  const palBox = $('txtPalette');
-  if (palBox && typeof DITHER_DATA !== 'undefined' && DITHER_DATA.palette) {
-    DITHER_DATA.palette.forEach(c => {
+  // 调色板色块：按分组显示，点一下取该色为前景色
+  // 分组是为了低字号场景：黑白灰对比最强、最容易辨认；免费/付费分组则便于
+  // 做一个"只用免费色"的方案。
+  const PAL_GROUPS = {
+    all: () => true,
+    gray: i => i < 6,                                       // 调色板前 6 个是黑白灰
+    free: i => !(DITHER_DATA.paid && DITHER_DATA.paid[i]),
+    paid: i => !!(DITHER_DATA.paid && DITHER_DATA.paid[i]),
+  };
+
+  function renderTextPalette() {
+    const box = $('txtPalette');
+    if (!box) return;
+    box.innerHTML = '';
+    if (typeof DITHER_DATA === 'undefined' || !DITHER_DATA.palette) return;
+    const key = $('txtPalGroup') ? $('txtPalGroup').value : 'all';
+    const test = PAL_GROUPS[key] || PAL_GROUPS.all;
+    const paid = DITHER_DATA.paid || [];
+    const names = DITHER_DATA.names || [];
+    DITHER_DATA.palette.forEach((c, i) => {
+      if (!test(i)) return;
       const hex = rgbToHex(c);
       const d = document.createElement('div');
-      d.className = 'pswatch';
+      d.className = 'pswatch' + (paid[i] ? ' paid' : '');
       d.style.background = hex;
-      d.title = hex;
+      d.title = (paid[i] ? '[付费] ' : '') + (names[i] || '') + ' ' + hex;
       d.addEventListener('click', () => { $('txtColor').value = hex; onInput(); });
-      palBox.appendChild(d);
+      box.appendChild(d);
     });
+  }
+  renderTextPalette();
+  if ($('txtPalGroup')) {
+    $('txtPalGroup').addEventListener('change', renderTextPalette);
   }
 
   function gather() {
@@ -151,6 +202,7 @@
       bg: $('txtBg').value,
       bgTransparent: $('txtBgTransparent').checked,
       threshold: Math.max(1, Math.min(254, +$('txtThr').value || 128)),
+      supersample: Math.max(1, Math.min(8, +($('txtSupersample') || {}).value || 4)),
     };
   }
 
@@ -202,8 +254,13 @@
   $('txtColor').addEventListener('input', () => {
     $('txtColorHex').textContent = $('txtColor').value; onInput();
   });
-  ['txtInput', 'txtFont', 'txtWrap', 'txtWrapChars', 'txtBg', 'txtBgTransparent']
-    .forEach(id => $(id).addEventListener('input', onInput));
+  ['txtInput', 'txtFont', 'txtWrap', 'txtWrapChars', 'txtBg', 'txtBgTransparent',
+   'txtSupersample'].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    el.addEventListener('input', onInput);
+    el.addEventListener('change', onInput);
+  });
   $('txtWrap').addEventListener('change', () => {
     $('wrapRow').classList.toggle('hidden', $('txtWrap').value !== 'auto');
     onInput();

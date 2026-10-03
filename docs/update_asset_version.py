@@ -17,7 +17,7 @@ import re
 import sys
 
 DOCS = pathlib.Path(__file__).resolve().parent
-ASSETS = ["delaunay.js", "dither.js", "app.js", "style.css"]
+ASSETS = ["delaunay.js", "dither.js", "textpixel.js", "app.js", "style.css"]
 PATTERN = re.compile(r'((?:src|href)="[^"]+?\.(?:js|css))\?v=[^"]*"')
 
 
