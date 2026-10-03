@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
-  <link rel="stylesheet" href="style.css?v=8839e0b1">
+  <link rel="stylesheet" href="style.css?v=b9b6f5f6">
 </head>
 <body>
   <header>
@@ -230,9 +230,24 @@
       </div>
 
       <div class="field">
+        <label>灰度级数</label>
+        <select id="txtLevels">
+          <option value="1">1 级（二值硬边，传统像素风）</option>
+          <option value="2">2 级</option>
+          <option value="3">3 级</option>
+          <option value="4" selected>4 级（推荐，低字号最清晰）</option>
+          <option value="6">6 级</option>
+          <option value="8">8 级</option>
+          <option value="16">16 级（接近平滑抗锯齿）</option>
+        </select>
+        <div class="hint">把超采样算出的覆盖率量化成几档明暗，用灰阶画出「半覆盖」的笔画。
+          低字号下比二值清晰得多；选 1 才是硬边像素风</div>
+      </div>
+
+      <div class="field">
         <label>边缘阈值 <span id="txtThrVal">64</span>（越小笔画越粗、越大越细）</label>
         <input type="range" id="txtThr" min="1" max="254" value="64">
-        <div class="hint">小字号建议 50~80 保住细笔画；大字号可用 128~160</div>
+        <div class="hint" id="txtThrHint">仅「1 级（二值）」模式生效；小字号建议 50~80</div>
       </div>
 
       <div class="field">
@@ -272,9 +287,9 @@
     </div>
   </div>
 
-  <script src="delaunay.js?v=8839e0b1"></script>
-  <script src="dither.js?v=8839e0b1"></script>
-  <script src="textpixel.js?v=8839e0b1"></script>
-  <script src="app.js?v=8839e0b1"></script>
+  <script src="delaunay.js?v=b9b6f5f6"></script>
+  <script src="dither.js?v=b9b6f5f6"></script>
+  <script src="textpixel.js?v=b9b6f5f6"></script>
+  <script src="app.js?v=b9b6f5f6"></script>
 </body>
 </html>

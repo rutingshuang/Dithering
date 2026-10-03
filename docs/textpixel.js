@@ -120,7 +120,22 @@
         }
         const cov = cnt ? sum / cnt : 0;
         const i = (y * W + x) * 4;
-        if (cov >= o.threshold) {
+        if (o.levels > 1) {
+          // 多级：把覆盖率量化成 N 档，再据它在前景/背景之间插值。
+          // 低字号下笔画只有一像素宽，覆盖度大量落在 30~70%，二值化会整条砍掉；
+          // 用灰阶把"半覆盖"画出来，可读性远好于二值 —— 这才是超采样该有的用法。
+          const N = o.levels;
+          const lv = Math.round(cov / 255 * (N - 1)) / (N - 1);   // 0..1
+          if (o.bgTransparent) {
+            d[i] = fg[0]; d[i + 1] = fg[1]; d[i + 2] = fg[2];
+            d[i + 3] = Math.round(lv * 255);
+          } else {
+            d[i] = Math.round(bg[0] + (fg[0] - bg[0]) * lv);
+            d[i + 1] = Math.round(bg[1] + (fg[1] - bg[1]) * lv);
+            d[i + 2] = Math.round(bg[2] + (fg[2] - bg[2]) * lv);
+            d[i + 3] = 255;
+          }
+        } else if (cov >= o.threshold) {          // 二值硬边（传统像素风）
           d[i] = fg[0]; d[i + 1] = fg[1]; d[i + 2] = fg[2]; d[i + 3] = 255;
         } else if (o.bgTransparent) {
           d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 0;
@@ -203,6 +218,7 @@
       bgTransparent: $('txtBgTransparent').checked,
       threshold: Math.max(1, Math.min(254, +$('txtThr').value || 128)),
       supersample: Math.max(1, Math.min(8, +($('txtSupersample') || {}).value || 4)),
+      levels: Math.max(1, Math.min(16, +($('txtLevels') || {}).value || 1)),
     };
   }
 
@@ -255,7 +271,7 @@
     $('txtColorHex').textContent = $('txtColor').value; onInput();
   });
   ['txtInput', 'txtFont', 'txtWrap', 'txtWrapChars', 'txtBg', 'txtBgTransparent',
-   'txtSupersample'].forEach(id => {
+   'txtSupersample', 'txtLevels'].forEach(id => {
     const el = $(id);
     if (!el) return;
     el.addEventListener('input', onInput);
@@ -307,6 +323,25 @@
   }
   $('txtBgTransparent').addEventListener('change', syncBgEnable);
 
+  // 多级灰度模式下阈值不参与运算，灰掉以免误解
+  function syncThrEnable() {
+    const el = $('txtLevels');
+    const binary = !el || +el.value === 1;
+    const thr = $('txtThr');
+    if (thr) {
+      thr.disabled = !binary;
+      thr.style.opacity = binary ? 1 : 0.35;
+    }
+    const h = $('txtThrHint');
+    if (h) {
+      h.textContent = binary
+        ? '仅「1 级（二值）」模式生效；小字号建议 50~80'
+        : '当前是多级灰度模式，阈值不参与运算';
+    }
+  }
+  if ($('txtLevels')) $('txtLevels').addEventListener('change', syncThrEnable);
+
   render();
   syncBgEnable();
+  syncThrEnable();
 })();
