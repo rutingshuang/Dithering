@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
-  <link rel="stylesheet" href="style.css?v=b9b6f5f6">
+  <link rel="stylesheet" href="style.css?v=f719a8ad">
 </head>
 <body>
   <header>
@@ -245,6 +245,12 @@
       </div>
 
       <div class="field">
+        <label class="inline"><input type="checkbox" id="txtPalLock" checked> 颜色限制在调色板内</label>
+        <div class="hint">勾选后各级灰度都会映射到调色板里最接近的颜色，导出的 PNG 100% 落在色表内。
+          取消勾选则在前景/背景之间自由插值，会产生色表外的颜色</div>
+      </div>
+
+      <div class="field">
         <label>边缘阈值 <span id="txtThrVal">64</span>（越小笔画越粗、越大越细）</label>
         <input type="range" id="txtThr" min="1" max="254" value="64">
         <div class="hint" id="txtThrHint">仅「1 级（二值）」模式生效；小字号建议 50~80</div>
@@ -287,9 +293,9 @@
     </div>
   </div>
 
-  <script src="delaunay.js?v=b9b6f5f6"></script>
-  <script src="dither.js?v=b9b6f5f6"></script>
-  <script src="textpixel.js?v=b9b6f5f6"></script>
-  <script src="app.js?v=b9b6f5f6"></script>
+  <script src="delaunay.js?v=f719a8ad"></script>
+  <script src="dither.js?v=f719a8ad"></script>
+  <script src="textpixel.js?v=f719a8ad"></script>
+  <script src="app.js?v=f719a8ad"></script>
 </body>
 </html>

@@ -104,6 +104,38 @@
     const fg = hexToRgb(o.color);
     const bg = hexToRgb(o.bg);
 
+    // 颜色限制到调色板：多级模式下每一级的理论色都映射到板内最近色，
+    // 透明模式下前景色本身也映射一次。这样导出的 PNG 全部落在色表里。
+    const pal = (o.paletteLock && typeof DITHER_DATA !== 'undefined'
+                 && DITHER_DATA.palette) ? DITHER_DATA.palette : null;
+    const nearestOnPalette = (c) => {
+      if (!pal) return c;
+      let bi = 0, bd = Infinity;
+      for (let p = 0; p < pal.length; p++) {
+        const q = pal[p];
+        const dd = (c[0] - q[0]) ** 2 + (c[1] - q[1]) ** 2 + (c[2] - q[2]) ** 2;
+        if (dd < bd) { bd = dd; bi = p; }
+      }
+      return pal[bi];
+    };
+    const fgOut = pal ? nearestOnPalette(fg) : fg;
+    const bgOut = pal ? nearestOnPalette(bg) : bg;
+
+    // 预计算 N 级色阶（都取自调色板）
+    let levelRGB = null;
+    if (o.levels > 1 && pal) {
+      levelRGB = [];
+      const N = o.levels;
+      for (let k = 0; k < N; k++) {
+        const t = k / (N - 1);
+        levelRGB.push(nearestOnPalette([
+          bg[0] + (fg[0] - bg[0]) * t,
+          bg[1] + (fg[1] - bg[1]) * t,
+          bg[2] + (fg[2] - bg[2]) * t,
+        ]));
+      }
+    }
+
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         let sum = 0, cnt = 0;
@@ -121,14 +153,18 @@
         const cov = cnt ? sum / cnt : 0;
         const i = (y * W + x) * 4;
         if (o.levels > 1) {
-          // 多级：把覆盖率量化成 N 档，再据它在前景/背景之间插值。
+          // 多级：把覆盖率量化成 N 档，再用它选该级的颜色。
           // 低字号下笔画只有一像素宽，覆盖度大量落在 30~70%，二值化会整条砍掉；
           // 用灰阶把"半覆盖"画出来，可读性远好于二值 —— 这才是超采样该有的用法。
           const N = o.levels;
-          const lv = Math.round(cov / 255 * (N - 1)) / (N - 1);   // 0..1
+          const step = Math.round(cov / 255 * (N - 1));
+          const lv = step / (N - 1);                        // 0..1
           if (o.bgTransparent) {
-            d[i] = fg[0]; d[i + 1] = fg[1]; d[i + 2] = fg[2];
+            d[i] = fgOut[0]; d[i + 1] = fgOut[1]; d[i + 2] = fgOut[2];
             d[i + 3] = Math.round(lv * 255);
+          } else if (levelRGB) {
+            const c = levelRGB[step];                       // 取自调色板
+            d[i] = c[0]; d[i + 1] = c[1]; d[i + 2] = c[2]; d[i + 3] = 255;
           } else {
             d[i] = Math.round(bg[0] + (fg[0] - bg[0]) * lv);
             d[i + 1] = Math.round(bg[1] + (fg[1] - bg[1]) * lv);
@@ -136,11 +172,11 @@
             d[i + 3] = 255;
           }
         } else if (cov >= o.threshold) {          // 二值硬边（传统像素风）
-          d[i] = fg[0]; d[i + 1] = fg[1]; d[i + 2] = fg[2]; d[i + 3] = 255;
+          d[i] = fgOut[0]; d[i + 1] = fgOut[1]; d[i + 2] = fgOut[2]; d[i + 3] = 255;
         } else if (o.bgTransparent) {
           d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 0;
         } else {
-          d[i] = bg[0]; d[i + 1] = bg[1]; d[i + 2] = bg[2]; d[i + 3] = 255;
+          d[i] = bgOut[0]; d[i + 1] = bgOut[1]; d[i + 2] = bgOut[2]; d[i + 3] = 255;
         }
       }
     }
@@ -219,6 +255,7 @@
       threshold: Math.max(1, Math.min(254, +$('txtThr').value || 128)),
       supersample: Math.max(1, Math.min(8, +($('txtSupersample') || {}).value || 4)),
       levels: Math.max(1, Math.min(16, +($('txtLevels') || {}).value || 1)),
+      paletteLock: $('txtPalLock') ? $('txtPalLock').checked : true,
     };
   }
 
@@ -271,7 +308,7 @@
     $('txtColorHex').textContent = $('txtColor').value; onInput();
   });
   ['txtInput', 'txtFont', 'txtWrap', 'txtWrapChars', 'txtBg', 'txtBgTransparent',
-   'txtSupersample', 'txtLevels'].forEach(id => {
+   'txtSupersample', 'txtLevels', 'txtPalLock'].forEach(id => {
     const el = $(id);
     if (!el) return;
     el.addEventListener('input', onInput);
