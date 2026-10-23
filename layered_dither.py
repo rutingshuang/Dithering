@@ -256,9 +256,46 @@ class Band:
     flat: Optional[list] = None     # 强制平涂色（None = 不强制）
     invert: bool = False            # 反转图案阈值
     enabled: bool = True            # 关掉该层 = 该层不参与抖动
+    colors: Optional[list] = None   # 手改的颜色槽（见 ColorSlot）；None = 自动 k-means 投影
 
     def wide(self) -> Tuple[float, float]:
         return (min(self.lo, self.hi), max(self.lo, self.hi))
+
+    def slots(self) -> List["ColorSlot"]:
+        """把 colors 字段解析成 ColorSlot 列表（容错：允许只写 color）。"""
+        if not self.colors:
+            return []
+        out = []
+        for c in self.colors:
+            if isinstance(c, ColorSlot):
+                out.append(c)
+            elif isinstance(c, dict):
+                out.append(ColorSlot(**{k: v for k, v in c.items()
+                                        if k in ColorSlot.__dataclass_fields__}))
+            else:                                   # 裸值：当调色板索引或 RGB
+                out.append(ColorSlot(color=c))
+        return out
+
+
+@dataclass
+class ColorSlot:
+    """一层里的一个颜色槽：用哪个颜色、按哪种方式还原成调色板色。
+
+    color: int  -> 调色板索引（63 色里的第几个）
+           list -> 自定义投影色 [r,g,b]，允许不在调色板内，靠混合还原
+    method:
+      mix     用调色板色重心混合出 color（默认；color 若是调色板色则退化为平涂）
+      direct  最近调色板色平涂
+      ordered 加有序抖动偏移后取最近色（纹理最强）
+      error   层内 1D 误差扩散（同一层的像素在空间上是分散的，只能按扫描序扩散，
+              效果比整图误差扩散差）
+    strength: ordered/error 的扰动强度，0-128，64 为默认
+    """
+    color: object = 0
+    method: str = "mix"
+    strength: int = 64
+    note: str = ""
+
 
 
 @dataclass
@@ -670,6 +707,169 @@ def _mix_weights(target_rgb: np.ndarray, pal_space, tri, Ainv,
     return bi[0], (w3 / s if s > 0 else np.full(3, 1.0 / 3.0))
 
 
+def _nearest_indices(pts: np.ndarray, pal: np.ndarray, space: str = "LAB"):
+    """每个点最近的调色板索引（在该层的投影空间里比）。"""
+    d = ((_to_space(pts, space)[:, None, :] - _to_space(pal, space)[None, :, :]) ** 2).sum(-1)
+    return d.argmin(axis=1)
+
+
+def _error_diffuse_1d(pts: np.ndarray, pal: np.ndarray, strength: int = 64):
+    """层内一维误差扩散。
+
+    分层之后同一层的像素在画面上是分散的（亮部东一块西一块），没有稳定的空间邻居，
+    所以只能在「该层像素的扫描序」上做 1D 累积扩散。它是真的误差扩散，但不具备
+    整图 FS 的空间分布特性，观感上更容易结成条带。
+    """
+    n = len(pts)
+    out = np.empty_like(pts)
+    gain = float(strength) / 64.0
+    err = np.zeros(3, dtype=np.float64)
+    for i in range(n):
+        want = pts[i] + err
+        k = int(((pal - want) ** 2).sum(axis=1).argmin())
+        out[i] = pal[k]
+        err = (want - pal[k]) * gain
+    return out
+
+
+def _apply_slots(px: np.ndarray, field: np.ndarray, slots: List[ColorSlot],
+                 pal: np.ndarray, pal_lab, tri, Ainv, hull_verts, hull_idx,
+                 space: str = "LAB") -> np.ndarray:
+    """按用户指定的颜色槽渲染一层像素。
+
+    先把层内像素归类到最近的颜色槽（在投影空间里比），再让每个槽按自己的 method
+    还原。归类而不是逐像素混合，是为了让「同一个槽的像素共用一套抖动」，与分层投影
+    的设计一致。
+    """
+    if not slots:
+        return px.copy()
+
+    targets = np.asarray([
+        pal[int(s.color)] if isinstance(s.color, (int, float)) else np.asarray(s.color, dtype=np.float64)
+        for s in slots
+    ], dtype=np.float64)
+
+    d = ((_to_space(px, space)[:, None, :]
+          - _to_space(targets, space)[None, :, :]) ** 2).sum(-1)
+    assign = d.argmin(axis=1)
+
+    out = np.empty_like(px)
+    for j, slot in enumerate(slots):
+        m = assign == j
+        if not m.any():
+            continue
+        tgt = targets[j]
+        method = str(slot.method or "mix").lower()
+        st = int(slot.strength)
+
+        if method == "direct":
+            out[m] = tgt
+        elif method == "ordered":
+            # 加均值 0 的有序偏移后取最近色：纹理最强，但会偏离正确色
+            pert = px[m] + (field[m][:, None] - 0.5) * float(st)
+            out[m] = pal[_nearest_indices(pert, pal, space)]
+        elif method == "error":
+            out[m] = _error_diffuse_1d(px[m], pal, st)
+        else:  # mix
+            idx, wgt = _mix_weights(tgt, pal_lab, tri, Ainv, hull_verts, hull_idx, space)
+            cum = np.cumsum(wgt)
+            pick = np.argmax(cum[None, :] >= field[m][:, None], axis=1)
+            out[m] = pal[np.asarray(idx, dtype=np.intp)[pick]]
+    return out
+
+
+def _band_index_map(image: Image.Image, profile: Profile):
+    """公共前置：算出每个像素属于哪一层。供渲染与分析复用。"""
+    arr, alpha = _split_alpha(image)
+    luma = compute_luma(arr, profile.space)
+    if profile.gamma != 1.0:
+        luma = np.power(np.clip(luma, 0, 1), profile.gamma)
+    if profile.black != 0.0 or profile.white != 1.0:
+        span = max(1e-6, profile.white - profile.black)
+        luma = np.clip((luma - profile.black) / span, 0.0, 1.0)
+    bands = [b for b in profile.bands if b.enabled]
+    if not bands:
+        return arr, alpha, np.zeros(arr.shape[:2], dtype=int), []
+    edges = resolve_edges(profile, luma, bands)
+    idx = np.clip(np.searchsorted(edges, luma, side="right") - 1, 0, len(bands) - 1)
+    return arr, alpha, idx, bands
+
+
+def analyze_bands(image: Image.Image, palette: Sequence[Sequence[int]], profile: Profile,
+                  only: Optional[int] = None):
+    """逐层分析：像素数、自动聚出的投影色、每个投影色的调色板混合配方。
+
+    返回 [{index, lo, hi, pixels, ratio, flat, colors:[{color, weight, recipe}]}, ...]
+    color 是自动投影色（RGB，可能不在板内），recipe 是它由哪些调色板色混出来。
+    这个结果只用于展示与编辑起点，不参与渲染。only 指定层号可只分析一层（GUI 打开
+    单层颜色编辑器时用，避免为了一张图跑满 24 次 k-means）。
+    """
+    pal = np.asarray(palette, dtype=np.float64)
+    arr, _alpha, band_idx, bands = _band_index_map(image, profile)
+    flat = arr.reshape(-1, 3)
+    flat_band = band_idx.reshape(-1)
+
+    space = str(getattr(profile, "match_space", "LAB")).upper()
+    if space not in ("RGB", "LAB"):
+        space = "LAB"
+    pal_lab, tri, Ainv, hull_verts, hull_idx = _palette_tetra(pal, space)
+    K = max(1, int(getattr(profile, "colors_per_band", 6)))
+    iters = int(getattr(profile, "kmeans_iters", 20))
+    sample = int(getattr(profile, "kmeans_sample", 60_000))
+    total = max(1, flat.shape[0])
+
+    out = []
+    for k, band in enumerate(bands):
+        if only is not None and k != only:
+            continue
+        sel = np.nonzero(flat_band == k)[0]
+        item = {"index": k, "lo": band.lo, "hi": band.hi,
+                "pixels": int(sel.size), "ratio": sel.size / total,
+                "flat": list(band.flat) if band.flat is not None else None,
+                "manual": bool(band.colors), "colors": []}
+        if sel.size and band.flat is None:
+            px = flat[sel]
+            if space == "LAB":
+                proj_space = _kmeans(_rgb_to_lab(px), K, iters, sample, band.seed + k)
+                proj_rgb = _lab_to_rgb(proj_space)
+            else:
+                proj_rgb = _kmeans(px, K, iters, sample, band.seed + k)
+                proj_space = proj_rgb
+            assign = np.linalg.norm(
+                _to_space(px, space)[:, None, :] - proj_space[None, :, :], axis=-1).argmin(axis=1)
+            for j, c in enumerate(proj_rgb):
+                idx, wgt = _mix_weights(c, pal_lab, tri, Ainv, hull_verts, hull_idx, space)
+                order = np.argsort(-wgt)
+                item["colors"].append({
+                    "color": [int(round(v)) for v in c],
+                    "weight": float((assign == j).mean()),
+                    "recipe": [{"index": int(idx[i]), "weight": float(wgt[i])}
+                               for i in order if wgt[i] > 0.005],
+                })
+        out.append(item)
+    return out
+
+
+def render_band_preview(image: Image.Image, palette: Sequence[Sequence[int]],
+                        profile: Profile, index: int) -> Tuple[Image.Image, Image.Image]:
+    """渲染单层预览：返回 (该层像素的原色图, 该层像素的抖动图)，其余区域透明。
+
+    用透明而不是置灰，这样在 UI 里叠在原图上看边界最直观。
+    """
+    pal = np.asarray(palette, dtype=np.float64)
+    arr, _alpha, band_idx, bands = _band_index_map(image, profile)
+    if not bands or index < 0 or index >= len(bands):
+        empty = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        return empty, empty
+    full = Image.fromarray(arr.reshape(arr.shape[0], arr.shape[1], 3).astype(np.uint8), "RGB")
+    out = render(image, pal, profile)
+    mask = (band_idx == index).astype(np.uint8) * 255
+
+    src_rgba = np.dstack([np.asarray(full), mask])
+    out_rgba = np.dstack([np.asarray(out.convert("RGB")), mask])
+    return (Image.fromarray(src_rgba, "RGBA"), Image.fromarray(out_rgba, "RGBA"))
+
+
 def layered_projection_dither(image: Image.Image,
                               palette: Sequence[Sequence[int]],
                               profile: Profile,
@@ -761,6 +961,15 @@ def layered_projection_dither(image: Image.Image,
         cp = custom_patterns.get(band.pattern) if custom_patterns else None
         field = threshold_field(band.pattern, band.size, band.cell, band.seed,
                                 h, w, band.invert, cp).reshape(-1)[sel]
+
+        # ---- 手动颜色槽：跳过 k-means，按用户指定的颜色与还原方式处理 ----
+        slots = band.slots()
+        if slots:
+            out[sel] = _apply_slots(px, field, slots, pal, pal_lab, tri, Ainv,
+                                    hull_verts, hull_idx, space)
+            if progress:
+                progress(k + 1, len(bands))
+            continue
 
         # ---- 第 1 步：每层聚类投影色，把层内像素投影上去 ----
         if space == "LAB":

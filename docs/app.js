@@ -82,6 +82,8 @@ bindRange('alpha', 'alphaVal');
 bindRange('baryStrength', 'baryStrengthVal');
 bindRange('minWeight', 'minWeightVal');
 bindRange('edgeGuard', 'edgeGuardVal');
+bindRange('refine', 'refineVal');
+bindRange('mixSpan', 'mixSpanVal');
 ['projBands', 'projColors'].forEach(id => {
   $(id).addEventListener('input', scheduleProcess);
 });
@@ -221,6 +223,9 @@ function gatherOpts() {
     gamut: $('gamut').checked,
     minWeight: +$('minWeight').value,
     edgeGuard: +$('edgeGuard').value,
+    projLab: $('projLab').checked,
+    refine: +$('refine').value,
+    mixSpan: +$('mixSpan').value,
   };
 }
 

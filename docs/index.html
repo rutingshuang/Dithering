@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
-  <link rel="stylesheet" href="style.css?v=f719a8ad">
+  <link rel="stylesheet" href="style.css?v=ee8e4285">
 </head>
 <body>
   <header>
@@ -132,6 +132,17 @@
         </div>
         <div class="field">
           <label><input type="checkbox" id="gamut"> 凸包投影（改善饱和色）</label>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="projLab" checked> 投影走 Lab（ΔE76 口径）</label>
+        </div>
+        <div class="field">
+          <label>面内精修 <span id="refineVal">2</span> 轮</label>
+          <input type="range" id="refine" min="0" max="4" step="1" value="2">
+        </div>
+        <div class="field">
+          <label>混合跨度上限 <span id="mixSpanVal">35</span>（压黑点）</label>
+          <input type="range" id="mixSpan" min="0" max="60" step="5" value="35">
         </div>
         <div class="field">
           <label>权重截断 <span id="minWeightVal">0.00</span>（缓解弥散）</label>
@@ -293,9 +304,9 @@
     </div>
   </div>
 
-  <script src="delaunay.js?v=f719a8ad"></script>
-  <script src="dither.js?v=f719a8ad"></script>
-  <script src="textpixel.js?v=f719a8ad"></script>
-  <script src="app.js?v=f719a8ad"></script>
+  <script src="delaunay.js?v=ee8e4285"></script>
+  <script src="dither.js?v=ee8e4285"></script>
+  <script src="textpixel.js?v=ee8e4285"></script>
+  <script src="app.js?v=ee8e4285"></script>
 </body>
 </html>

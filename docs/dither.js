@@ -321,8 +321,24 @@ function buildBaryData(selectedPalette) {
   for (const t of tetras) for (const f of tetraFaces(t)) {
     if (faceCount.get(f.slice().sort().join(',')) === 1) hull.push(f);
   }
+  // Lab 凸包：凸包投影必须在 ΔE76 所在空间算。全局 Delaunay 凸包只保留最外层约 27 个色，
+  // 橄榄系全被包在里面，暖黄绿只能靠 LightGreen+Black 压暗 —— 那 30% 的纯黑就是黑点。
+  const labPoints = selectedPalette.map(c => rgbToLab(c));
+  const labTetras = computeDelaunay(labPoints);
+  const labFaceCount = new Map();
+  for (const t of labTetras) for (const f of tetraFaces(t)) {
+    const key = f.slice().sort().join(',');
+    labFaceCount.set(key, (labFaceCount.get(key) || 0) + 1);
+  }
+  const labHull = [];
+  for (const t of labTetras) for (const f of tetraFaces(t)) {
+    if (labFaceCount.get(f.slice().sort().join(',')) === 1) labHull.push(f);
+  }
+  const labL = labPoints.map(c => c[0]);
+
   // 查表网格（64³）
-  const data = { palette: selectedPalette, tetras, ainv, hull, gridSize: 64, grid: null };
+  const data = { palette: selectedPalette, tetras, ainv, hull, gridSize: 64, grid: null,
+                 labPoints, labHull, labL };
   const gsize = 64, step = 256 / gsize;
   const grid = new Int16Array(gsize*gsize*gsize);
   const d2 = { tetras, ainv };
@@ -395,12 +411,83 @@ function projectToHull(p, D) {
   return { idx: bestIdx, w: [1-w1-w2, w1, w2] };
 }
 
+// Lab 凸包外像素：投影到 Lab 凸包表面最近点（目标口径 ΔE76），返回索引+重心权重
+function projectToHullLab(pLab, D) {
+  const pal = D.labPoints;
+  let bestQ = null, bestIdx = null, bestD = Infinity;
+  for (let f = 0; f < D.labHull.length; f++) {
+    const hi = D.labHull[f];
+    const q = closestOnTri(pLab, pal[hi[0]], pal[hi[1]], pal[hi[2]]);
+    const d = (q[0]-pLab[0])**2 + (q[1]-pLab[1])**2 + (q[2]-pLab[2])**2;
+    if (d < bestD) { bestD = d; bestQ = q; bestIdx = hi; }
+  }
+  const v0 = pal[bestIdx[0]], v1 = pal[bestIdx[1]], v2 = pal[bestIdx[2]];
+  const e0 = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]];
+  const e1 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]];
+  const e2 = [bestQ[0]-v0[0], bestQ[1]-v0[1], bestQ[2]-v0[2]];
+  const d00 = e0[0]*e0[0]+e0[1]*e0[1]+e0[2]*e0[2];
+  const d01 = e0[0]*e1[0]+e0[1]*e1[1]+e0[2]*e1[2];
+  const d11 = e1[0]*e1[0]+e1[1]*e1[1]+e1[2]*e1[2];
+  const d20 = e2[0]*e0[0]+e2[1]*e0[1]+e2[2]*e0[2];
+  const d21 = e2[0]*e1[0]+e2[1]*e1[1]+e2[2]*e1[2];
+  const den = d00*d11 - d01*d01;
+  const w1 = (d11*d20 - d01*d21)/den;
+  const w2 = (d00*d21 - d01*d20)/den;
+  return { idx: [bestIdx[0], bestIdx[1], bestIdx[2]], w: [1-w1-w2, w1, w2] };
+}
+
+// 面内精修：投影点落在三角面上之后，换 Lab 目标再挤几 % 的位置。
+// 2 轮是甜点，4 轮起逐像素更优但 8x8 块平均反而回升（指标错位）。
+function refineOnFaceLab(pLab, idx, w, D, rounds) {
+  if (!rounds) return w;
+  const pal = D.labPoints;
+  const a0 = pal[idx[0]], e1 = [pal[idx[1]][0]-a0[0], pal[idx[1]][1]-a0[1], pal[idx[1]][2]-a0[2]],
+        e2 = [pal[idx[2]][0]-a0[0], pal[idx[2]][1]-a0[1], pal[idx[2]][2]-a0[2]];
+  let u = Math.min(1, Math.max(0, w[1])), v = Math.min(1, Math.max(0, w[2]));
+  const dist = (uu, vv) => {
+    const q = [a0[0]+uu*e1[0]+vv*e2[0], a0[1]+uu*e1[1]+vv*e2[1], a0[2]+uu*e1[2]+vv*e2[2]];
+    return Math.sqrt((q[0]-pLab[0])**2 + (q[1]-pLab[1])**2 + (q[2]-pLab[2])**2);
+  };
+  let best = dist(u, v);
+  let step = 0.14;
+  for (let r = 0; r < rounds; r++) {
+    for (let du = -1; du <= 1; du++) for (let dv = -1; dv <= 1; dv++) {
+      let uu = Math.min(1, Math.max(0, u + du*step));
+      let vv = Math.min(1, Math.max(0, v + dv*step));
+      if (uu + vv > 1) { const s2 = uu + vv; uu /= s2; vv /= s2; }
+      const d = dist(uu, vv);
+      if (d < best) { best = d; u = uu; v = vv; }
+    }
+    step *= 0.5;
+  }
+  return [1-u-v, u, v];
+}
+
 // 权重截断后归一化
 function pruneWeights(w, minWeight) {
   let s = 0;
   for (let k = 0; k < w.length; k++) { if (w[k] < minWeight) w[k] = 0; s += w[k]; }
   if (s > 0) for (let k = 0; k < w.length; k++) w[k] /= s;
   return w;
+}
+
+// 预计算数据（delaunay_data.js）里没有 Lab 凸包时按需补算，只算一次
+function ensureLabData(D) {
+  if (D.labHull) return;
+  const labPoints = D.palette.map(c => rgbToLab(c));
+  const labTetras = computeDelaunay(labPoints);
+  const cnt = new Map();
+  for (const t of labTetras) for (const f of tetraFaces(t)) {
+    const k = f.slice().sort().join(',');
+    cnt.set(k, (cnt.get(k) || 0) + 1);
+  }
+  const labHull = [];
+  for (const t of labTetras) for (const f of tetraFaces(t)) {
+    if (cnt.get(f.slice().sort().join(',')) === 1) labHull.push(f);
+  }
+  D.labPoints = labPoints;
+  D.labHull = labHull;
+  D.labL = labPoints.map(c => c[0]);
 }
 
 // 重心混合
@@ -413,6 +500,11 @@ function barycentricDither(img, palette, D, opts) {
   const minWeight = opts.minWeight ?? 0;
   const edgeGuard = opts.edgeGuard ?? 0;
   const gamut = !!opts.gamut;
+  const projLab = opts.projLab !== false;      // 凸包投影在 Lab（ΔE76）里算，默认开
+  const refine = opts.refine ?? 2;              // 投影落定后的面内精修轮数
+  const mixSpan = opts.mixSpan ?? 35;           // 凸包内混合允许的最大顶点亮度跨度
+  const nearMax = 0.9;
+  if (projLab) ensureLabData(D);
   const gsize = D.gridSize, step = 256 / gsize;
   const edge = edgeGuard > 0 ? labEdgeMap(img) : null;
   const out = new Uint8ClampedArray(data.length);
@@ -464,7 +556,22 @@ function barycentricDither(img, palette, D, opts) {
         // 凸包内：重心混合
         w = pruneWeights(w, minWeight);
         const maxW = Math.max(w[0], w[1], w[2], w[3]);
-        if (maxW >= 0.9) {
+        // 混合跨度：四面体 4 个顶点的 Lab L 跨度太大时，块平均虽正确，但块内就是
+        // 「亮底 + 暗点」的棋盘格（LightGreen L=90 与 Olive L=56 混出 L=78 正是一例）。
+        // 亮区这类像素退回单一近色，暗部不受影响（暗部本来就该有暗点）。
+        let wideMix = false;
+        if (mixSpan > 0 && maxW < nearMax) {
+          const tet = D.tetras[t];
+          let lo = Infinity, hi = -Infinity;
+          for (let k = 0; k < 4; k++) {
+            const L = D.labL[tet[k]];
+            if (L < lo) lo = L;
+            if (L > hi) hi = L;
+          }
+          const luma = 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
+          wideMix = (hi - lo) > mixSpan && luma > 76;
+        }
+        if (maxW >= 0.9 || wideMix) {
           // 近单色 → 有序路径
           const q = [p[0]+off, p[1]+off, p[2]+off];
           const idx = nearestRGBIdx(q, palette);
@@ -481,8 +588,16 @@ function barycentricDither(img, palette, D, opts) {
       } else {
         // 凸包外
         if (gamut) {
-          const pr = projectToHull(p, D);
-          let w3 = pruneWeights(pr.w, minWeight);
+          let pr, w3;
+          if (projLab) {
+            const pLab = rgbToLab(p);
+            pr = projectToHullLab(pLab, D);
+            w3 = refineOnFaceLab(pLab, pr.idx, pr.w.slice(), D, refine);
+          } else {
+            pr = projectToHull(p, D);
+            w3 = pr.w.slice();
+          }
+          w3 = pruneWeights(w3, minWeight);
           const cum = [w3[0], w3[0]+w3[1], 1.0];
           let sel = 2;
           for (let k = 0; k < 3; k++) if (cum[k] >= tt) { sel = k; break; }
