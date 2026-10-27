@@ -334,6 +334,7 @@ class Profile:
     edge_mix: float = 0.5           # hybrid 模式下向 linear 靠拢的比例
     colors_per_band: int = 8        # 每层投影色数量（越大投影越准、色差越低）
     mix_colors: int = 4             # 每个投影色用几个板内色混合：4=重心(无损) 3=三角形 2=线段
+    mix2_penalty: float = 0.10      # 2 色模式下对端点距离的惩罚（0=只求拟合最近，会选出异色）
     adaptive_k: bool = True         # 按层内颜色散度分配色数（总预算 = 层数 x colors_per_band）
     kmeans_iters: int = 20          # k-means 迭代轮数
     kmeans_sample: int = 60000      # k-means 采样上限（加速用）
@@ -747,7 +748,7 @@ _TRIU_CACHE = {}
 
 def _mix_weights_k(target_rgb: np.ndarray, pal_space, tri, Ainv,
                    hull_verts, hull_idx, space: str = "LAB",
-                   k: int = 4, cand: int = 16):
+                   k: int = 4, cand: int = 16, penalty: float = 0.10):
     """用 k 个调色板色混合出目标色。k=4 走四面体重心（凸包内精确无损）。
 
     k=2/3 是"少色方案"：2 色就是把目标投影到某两个板内色连成的线段上。
@@ -771,6 +772,13 @@ def _mix_weights_k(target_rgb: np.ndarray, pal_space, tri, Ainv,
         ap = p[0][None, :] - A
         t = np.clip((ap * AB).sum(1) / den, 0.0, 1.0)
         d = np.linalg.norm(A + t[:, None] * AB - p[0][None, :], axis=1)
+        # 端点距离惩罚。只按"投影点最近"选色会专挑那种"长线段恰好从目标附近
+        # 穿过"的色对，其中一端可能完全是无关的异色（近白配 15% 深橄榄），
+        # 权重虽然对得上，视觉上却是刺眼的杂点。实测 penalty=0.1 把区域平均
+        # ΔE 从 3.51 压到 1.40；再大反而变差（端点被绑死，拟合不准）。
+        if penalty > 0:
+            d = d + penalty * (np.linalg.norm(A - p[0][None, :], axis=1)
+                               + np.linalg.norm(B - p[0][None, :], axis=1))
         m = int(np.argmin(d))
         # 混合点 Q = (1-t)*A + t*B，所以 A 的权重是 1-t
         return np.array([I[m], J[m]], dtype=np.intp), np.array([1.0 - t[m], t[m]])
@@ -1104,7 +1112,8 @@ def layered_projection_dither(image: Image.Image,
                 continue
             idx, wgt = _mix_weights_k(proj_rgb[j], pal_lab, tri, Ainv,
                                       hull_verts, hull_idx, space,
-                                      k=int(getattr(profile, 'mix_colors', 4)))
+                                      k=int(getattr(profile, 'mix_colors', 4)),
+                                      penalty=float(getattr(profile, 'mix2_penalty', 0.10)))
             cum = np.cumsum(wgt)
             pick = np.argmax(cum[None, :] >= field[m][:, None], axis=1)
             out[sel[m]] = pal[np.asarray(idx, dtype=np.intp)[pick]]
