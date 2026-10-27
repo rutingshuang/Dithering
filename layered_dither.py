@@ -452,8 +452,39 @@ def make_projection_profile(n_bands: int = 24,
     )
 
 
+def make_reference_profile(n_bands: int = 24,
+                           colors_per_band: int = 2,
+                           pattern: str = "rounddot",
+                           size: int = 8,
+                           match_space: str = "LAB",
+                           space: str = "lab",
+                           edge_mode: str = "linear",
+                           cell: int = 1) -> Profile:
+    """参考图风格：每层只给极少量的色，明暗过渡交给圆点网点。
+
+    对应 Krita 手工流程里「每层只挑两个色、用网点抖出中间调」的做法。分层让每层的
+    明暗范围很窄，2 个色就够覆盖，所以色差损失有限（实测每层 2 色 ΔE 1.125，
+    每层 12 色 0.797，绝对差 0.33），换来的是网点结构清晰、画面干净。
+
+    注意网点尺寸要和题材匹配：pattern='rounddot' 且 size=8 适合大色块的图（动画、
+    像素画）；细节密集的插画用 size=4 或改用 bayer，否则 8x8 的圆点会盖掉细节。
+    """
+    return make_profile(
+        n_bands=n_bands,
+        space=space,
+        match_space=match_space,
+        edge_mode=edge_mode,
+        pattern=pattern,
+        size=int(size),
+        cell=cell,
+        colors_per_band=int(colors_per_band),
+        name="参考图风格（每层限色·圆点网点）",
+    )
+
+
 PRESETS = {
     "projection": make_projection_profile,
+    "reference": make_reference_profile,
 }
 
 

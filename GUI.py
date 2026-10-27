@@ -123,7 +123,16 @@ def _layer_presets():
     return {
         '标准（投影混色·落盘内）': lambda n_bands, colors_per_band=8:
             ldl.make_projection_profile(n_bands=n_bands, colors_per_band=colors_per_band),
+        '参考图风格（每层2色·圆点网点）': lambda n_bands, colors_per_band=2:
+            ldl.make_reference_profile(n_bands=n_bands, colors_per_band=colors_per_band),
     }
+
+
+# 选预设时联动这些参数：每层色数、网点图案、阶数
+LAYER_PRESET_DEFAULTS = {
+    '标准（投影混色·落盘内）': (8, 'bayer', 16),
+    '参考图风格（每层2色·圆点网点）': (2, 'rounddot', 8),
+}
 
 
 LAYER_PATTERNS = ('bayer', 'clustered', 'rounddot', 'diagonal', 'spiral',
@@ -990,7 +999,7 @@ class ImageDitherApp(QMainWindow):
         self.combo_layer_preset = QComboBox()
         self.combo_layer_preset.addItems(list(_layer_presets().keys()))
         self.combo_layer_preset.setToolTip('复位到标准参数')
-        self.combo_layer_preset.currentIndexChanged.connect(self._invalidate_layer_profile)
+        self.combo_layer_preset.currentIndexChanged.connect(self.on_layer_preset_change)
         ly.addWidget(self.combo_layer_preset, 0, 1)
 
         ly.addWidget(QLabel('层数'), 1, 0)
@@ -1025,6 +1034,26 @@ class ImageDitherApp(QMainWindow):
         self.combo_layer_space.currentIndexChanged.connect(self._invalidate_layer_profile)
         ly.addWidget(self.combo_layer_space, 2, 3)
 
+        ly.addWidget(QLabel('网点图案'), 3, 0)
+        self.combo_layer_pattern = QComboBox()
+        self.combo_layer_pattern.addItems(LAYER_PATTERNS)
+        self.combo_layer_pattern.setToolTip(
+            'bayer：阈值均匀交错，边缘锐利但纹理细碎；'
+            'rounddot：圆形网点，聚集成点、画面干净（参考图风格）；'
+            '这里改会应用到所有层，要逐层微调用下面的「编辑分层参数表…」')
+        self.combo_layer_pattern.currentIndexChanged.connect(self._invalidate_layer_profile)
+        ly.addWidget(self.combo_layer_pattern, 3, 1)
+
+        ly.addWidget(QLabel('图案阶数'), 3, 2)
+        self.spin_layer_size = QSpinBox()
+        self.spin_layer_size.setRange(2, 64)
+        self.spin_layer_size.setValue(16)
+        self.spin_layer_size.setToolTip(
+            '网点越细阶数越大。圆点超过 8 会跨越感知块、块内只剩寥寥几环，'
+            '局部平均严重偏离，慎用')
+        self.spin_layer_size.valueChanged.connect(self._invalidate_layer_profile)
+        ly.addWidget(self.spin_layer_size, 3, 3)
+
         btn_row = QHBoxLayout()
         self.btn_layer_edit = QPushButton('编辑分层参数表…')
         self.btn_layer_edit.setToolTip('逐层调抖动图案/阶数/放大 —— 即手工逐层调参的界面')
@@ -1036,12 +1065,12 @@ class ImageDitherApp(QMainWindow):
         self.btn_layer_save = QPushButton('保存预设…')
         self.btn_layer_save.clicked.connect(self.on_save_layer_profile)
         btn_row.addWidget(self.btn_layer_save)
-        ly.addLayout(btn_row, 3, 0, 1, 4)
+        ly.addLayout(btn_row, 4, 0, 1, 4)
 
         self.lbl_layer_state = QLabel('')
         self.lbl_layer_state.setWordWrap(True)
         self.lbl_layer_state.setStyleSheet('color: #888;')
-        ly.addWidget(self.lbl_layer_state, 4, 0, 1, 4)
+        ly.addWidget(self.lbl_layer_state, 5, 0, 1, 4)
 
         dither_layout.addWidget(self.layered_params)
         self.layered_params.setVisible(False)
@@ -1255,7 +1284,34 @@ class ImageDitherApp(QMainWindow):
             return None
         p.match_space = self.combo_layer_space.currentText()
         p.edge_mode = LAYER_EDGE_MODES.get(self.combo_layer_edge.currentText(), 'linear')
+        return self._apply_pattern(p)
+
+    def _apply_pattern(self, p):
+        """把面板上的网点图案/阶数写到所有层。逐层微调仍走后边的参数表。"""
+        if p is None or not hasattr(self, 'combo_layer_pattern'):
+            return p
+        pat = self.combo_layer_pattern.currentText()
+        size = int(self.spin_layer_size.value())
+        for b in p.bands:
+            b.pattern = pat
+            b.size = size
         return p
+
+    def on_layer_preset_change(self):
+        """切预设时把「每层色数 / 网点图案 / 阶数」一并联动过去。"""
+        d = LAYER_PRESET_DEFAULTS.get(self.combo_layer_preset.currentText())
+        ws = (self.spin_layer_colors, self.combo_layer_pattern, self.spin_layer_size)
+        if d:
+            K, pat, size = d
+            for w in ws:
+                w.blockSignals(True)
+            self.spin_layer_colors.setValue(K)
+            if self.combo_layer_pattern.findText(pat) >= 0:
+                self.combo_layer_pattern.setCurrentText(pat)
+            self.spin_layer_size.setValue(size)
+            for w in ws:
+                w.blockSignals(False)
+        self._invalidate_layer_profile()
 
     def current_layer_profile(self):
         """取当前生效的 Profile：手工编辑过的优先，否则按预设现场生成。"""
@@ -1269,7 +1325,7 @@ class ImageDitherApp(QMainWindow):
         self._layer_profile.match_space = self.combo_layer_space.currentText()
         self._layer_profile.edge_mode = LAYER_EDGE_MODES.get(
             self.combo_layer_edge.currentText(), 'linear')
-        return self._layer_profile
+        return self._apply_pattern(self._layer_profile)
 
     def _refresh_layer_state(self):
         if not LAYERED_AVAILABLE:
