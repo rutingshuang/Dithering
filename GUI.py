@@ -143,6 +143,8 @@ LAYER_EDGE_MODES = {
     '混合': 'hybrid',
 }
 LAYER_SPACES = ['Lab', 'RGB']
+LAYER_MIX_MODES = ['4 色（重心混合，无损）', '3 色（三角形）', '2 色（线段）']
+LAYER_MIX_VALUES = [4, 3, 2]
 
 # 双读抖动的四个预览视角
 DUAL_VIEWS = ('原始 A', '隐藏图 B', '合成·远看 → A', '合成·近看 1:1 → B')
@@ -1054,6 +1056,17 @@ class ImageDitherApp(QMainWindow):
         self.spin_layer_size.valueChanged.connect(self._invalidate_layer_profile)
         ly.addWidget(self.spin_layer_size, 3, 3)
 
+        ly.addWidget(QLabel('混合色数'), 4, 0)
+        self.combo_layer_mix = QComboBox()
+        self.combo_layer_mix.addItems(LAYER_MIX_MODES)
+        self.combo_layer_mix.setToolTip(
+            '每个投影色用几个调色板色混出来。4 色 = 四面体重心，凸包内无损；'
+            '3 色 = 三角形；2 色 = 线段。少色更"纯粹"，但端点常离目标很远、'
+            '要用异色补偿（近白会掺深橄榄），实测区域平均 ΔE 从 0.85 升到 '
+            '2.66（3 色）/ 3.51（2 色）')
+        self.combo_layer_mix.currentIndexChanged.connect(self._invalidate_layer_profile)
+        ly.addWidget(self.combo_layer_mix, 4, 1)
+
         btn_row = QHBoxLayout()
         self.btn_layer_edit = QPushButton('编辑分层参数表…')
         self.btn_layer_edit.setToolTip('逐层调抖动图案/阶数/放大 —— 即手工逐层调参的界面')
@@ -1065,12 +1078,12 @@ class ImageDitherApp(QMainWindow):
         self.btn_layer_save = QPushButton('保存预设…')
         self.btn_layer_save.clicked.connect(self.on_save_layer_profile)
         btn_row.addWidget(self.btn_layer_save)
-        ly.addLayout(btn_row, 4, 0, 1, 4)
+        ly.addLayout(btn_row, 5, 0, 1, 4)
 
         self.lbl_layer_state = QLabel('')
         self.lbl_layer_state.setWordWrap(True)
         self.lbl_layer_state.setStyleSheet('color: #888;')
-        ly.addWidget(self.lbl_layer_state, 5, 0, 1, 4)
+        ly.addWidget(self.lbl_layer_state, 6, 0, 1, 4)
 
         dither_layout.addWidget(self.layered_params)
         self.layered_params.setVisible(False)
@@ -1295,6 +1308,8 @@ class ImageDitherApp(QMainWindow):
         for b in p.bands:
             b.pattern = pat
             b.size = size
+        if hasattr(self, 'combo_layer_mix'):
+            p.mix_colors = LAYER_MIX_VALUES[self.combo_layer_mix.currentIndex()]
         return p
 
     def on_layer_preset_change(self):

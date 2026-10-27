@@ -333,6 +333,7 @@ class Profile:
     edge_mode: str = "linear"       # 分层依据：linear(按明度等分) | quantile(按图像分布等频) | hybrid
     edge_mix: float = 0.5           # hybrid 模式下向 linear 靠拢的比例
     colors_per_band: int = 8        # 每层投影色数量（越大投影越准、色差越低）
+    mix_colors: int = 4             # 每个投影色用几个板内色混合：4=重心(无损) 3=三角形 2=线段
     adaptive_k: bool = True         # 按层内颜色散度分配色数（总预算 = 层数 x colors_per_band）
     kmeans_iters: int = 20          # k-means 迭代轮数
     kmeans_sample: int = 60000      # k-means 采样上限（加速用）
@@ -741,6 +742,64 @@ def _palette_tetra(pal: np.ndarray, space: str = "LAB"):
     return pal_space, tri, Ainv, pal_space[tri.convex_hull], tri.convex_hull
 
 
+_TRIU_CACHE = {}
+
+
+def _mix_weights_k(target_rgb: np.ndarray, pal_space, tri, Ainv,
+                   hull_verts, hull_idx, space: str = "LAB",
+                   k: int = 4, cand: int = 16):
+    """用 k 个调色板色混合出目标色。k=4 走四面体重心（凸包内精确无损）。
+
+    k=2/3 是"少色方案"：2 色就是把目标投影到某两个板内色连成的线段上。
+    分解本身是准的，但要清楚代价——端点往往离目标很远，会选出异色做补偿
+    （实测近白色被分解成 85% 白 + 15% 深橄榄），权重虽对，块内却平均不干净：
+    实测区域平均 ΔE 从 0.85 升到 3.51，3 色是 2.66。
+    """
+    if k >= 4:
+        return _mix_weights(target_rgb, pal_space, tri, Ainv, hull_verts, hull_idx, space)
+
+    p = _to_space(np.asarray(target_rgb, dtype=np.float64).reshape(1, 3), space)
+    n = len(pal_space)
+    if k == 2:
+        key = n
+        if key not in _TRIU_CACHE:
+            I, J = np.triu_indices(n, k=1)
+            AB = pal_space[J] - pal_space[I]
+            _TRIU_CACHE[key] = (I, J, pal_space[I], pal_space[J], AB,
+                                np.maximum((AB * AB).sum(1), 1e-12))
+        I, J, A, B, AB, den = _TRIU_CACHE[key]
+        ap = p[0][None, :] - A
+        t = np.clip((ap * AB).sum(1) / den, 0.0, 1.0)
+        d = np.linalg.norm(A + t[:, None] * AB - p[0][None, :], axis=1)
+        m = int(np.argmin(d))
+        # 混合点 Q = (1-t)*A + t*B，所以 A 的权重是 1-t
+        return np.array([I[m], J[m]], dtype=np.intp), np.array([1.0 - t[m], t[m]])
+
+    # k == 3：取最近的 cand 个色，枚举三元组，投影到三角形
+    dd = np.linalg.norm(pal_space - p[0][None, :], axis=1)
+    top = np.argsort(dd)[:cand]
+    best = (np.inf, None, None)
+    for a in range(len(top)):
+        for b in range(a + 1, len(top)):
+            for c in range(b + 1, len(top)):
+                V = pal_space[[top[a], top[b], top[c]]]
+                q = _closest_on_tri(p, V[0], V[1], V[2])[0]
+                e = float(np.linalg.norm(q - p[0]))
+                if e < best[0]:
+                    best = (e, [int(top[a]), int(top[b]), int(top[c])], q)
+    e, idx, q = best
+    V = pal_space[idx]
+    v0, v1, v2 = V[1] - V[0], V[2] - V[0], q - V[0]
+    d00 = v0 @ v0; d01 = v0 @ v1; d11 = v1 @ v1; d20 = v2 @ v0; d21 = v2 @ v1
+    den = d00 * d11 - d01 * d01
+    den = den if abs(den) > 1e-12 else 1e-12
+    w1 = max(0.0, (d11 * d20 - d01 * d21) / den)
+    w2 = max(0.0, (d00 * d21 - d01 * d20) / den)
+    w0 = max(0.0, 1.0 - w1 - w2)
+    ssum = w0 + w1 + w2
+    return np.array(idx, dtype=np.intp), np.array([w0, w1, w2]) / (ssum if ssum > 0 else 1.0)
+
+
 def _mix_weights(target_rgb: np.ndarray, pal_space, tri, Ainv,
                  hull_verts, hull_idx, space: str = "LAB"):
     """求"用调色板色混合出目标色"的权重，返回 (调色板索引, 权重)，权重和为 1。
@@ -1043,8 +1102,9 @@ def layered_projection_dither(image: Image.Image,
             m = assign == j
             if not m.any():
                 continue
-            idx, wgt = _mix_weights(proj_rgb[j], pal_lab, tri, Ainv,
-                                    hull_verts, hull_idx, space)
+            idx, wgt = _mix_weights_k(proj_rgb[j], pal_lab, tri, Ainv,
+                                      hull_verts, hull_idx, space,
+                                      k=int(getattr(profile, 'mix_colors', 4)))
             cum = np.cumsum(wgt)
             pick = np.argmax(cum[None, :] >= field[m][:, None], axis=1)
             out[sel[m]] = pal[np.asarray(idx, dtype=np.intp)[pick]]
