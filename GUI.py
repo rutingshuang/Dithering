@@ -126,8 +126,8 @@ def _layer_presets():
     }
 
 
-LAYER_PATTERNS = ('bayer', 'clustered', 'diagonal', 'spiral', 'checker',
-                  'noise', 'bluenoise')
+LAYER_PATTERNS = ('bayer', 'clustered', 'rounddot', 'diagonal', 'spiral',
+                  'checker', 'noise', 'bluenoise')
 LAYER_EDGE_MODES = {
     '绝对明度（保色彩）': 'linear',
     '自适应等频（保细节）': 'quantile',
