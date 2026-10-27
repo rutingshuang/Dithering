@@ -730,7 +730,7 @@ class ImageDitherApp(QMainWindow):
 
         # 后台线程引用（防止被 GC），以及预览缩略图上限
         self._worker = None
-        self.preview_cap = 1600  # 预览时处理的最大边长(px)，大图用缩略图保证流畅
+        self.preview_cap = 4_000_000  # 预览时处理的最大**总像素数**（不是长边，避免条漫被压扁）
         self._was_preview = False  # 最近一次处理是预览还是保存
 
         # 重心混合：凸包投影 开/关 各存一套 权重截断/边缘保护 的值，勾选切换时互换
@@ -1461,11 +1461,7 @@ class ImageDitherApp(QMainWindow):
             raise RuntimeError('缺少分层预设或图片')
         pal = self.build_palette_list()
         img = self.original_image
-        cap = getattr(self, 'preview_cap', 0) or 0
-        if cap and max(img.size) > cap:
-            s = cap / max(img.size)
-            img = img.resize((max(1, int(img.width * s)), max(1, int(img.height * s))),
-                             Image.LANCZOS)
+        img = self._cap_pixels(img, getattr(self, 'preview_cap', 0) or 0)
         return ldl.render_band_preview(img, pal, p, index)
 
     def on_save_layer_profile(self):
@@ -1623,12 +1619,11 @@ class ImageDitherApp(QMainWindow):
         img = self._resize_image(image, settings['resize'])
         if img is None:
             raise RuntimeError('图片为空')
-        cap = self.preview_cap
-        if for_preview and settings['method'] == '误差扩散抖动':
-            cap = 1000  # 误差扩散是串行算法，预览用更低分辨率保证流畅
-        if for_preview and max(img.size) > cap:
-            s = cap / max(img.size)
-            img = img.resize((max(1, int(img.width * s)), max(1, int(img.height * s))), Image.LANCZOS)
+        if for_preview:
+            cap = self.preview_cap
+            if settings['method'] == '误差扩散抖动':
+                cap = 1_000_000  # 误差扩散是串行算法，预览用更低分辨率保证流畅
+            img = self._cap_pixels(img, cap)
         if settings['method'] == '重心混合':
             return barycentric_dither(
                 img, palette,
@@ -1759,15 +1754,26 @@ class ImageDitherApp(QMainWindow):
             print("pil->qpixmap 转换失败：", e)
             return QPixmap()
 
-    def _make_display_pixmap(self, pil_img, max_dim=1600):
+    @staticmethod
+    def _cap_pixels(img, max_pixels):
+        """按**总像素数**限制尺寸，而不是长边。
+
+        条漫这类极端长宽比（如 462x10800）如果按长边缩放，宽度会被压到几十像素；
+        按面积限制则与普通大图一视同仁。
+        """
+        if img is None or max_pixels <= 0:
+            return img
+        w, h = img.size
+        if w * h <= max_pixels:
+            return img
+        s = math.sqrt(max_pixels / float(w * h))
+        return img.resize((max(1, int(w * s)), max(1, int(h * s))), Image.LANCZOS)
+
+    def _make_display_pixmap(self, pil_img, max_pixels=4_000_000):
         """把 PIL 图像缩到适合显示的尺寸再转 QPixmap，避免大图占用海量内存/阻塞界面。"""
         if pil_img is None:
             return QPixmap()
-        w, h = pil_img.size
-        scale = min(1.0, max_dim / max(w, h))
-        if scale < 1.0:
-            pil_img = pil_img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
-        return self.pil_image_to_qpixmap(pil_img)
+        return self.pil_image_to_qpixmap(self._cap_pixels(pil_img, max_pixels))
 
     def show_image_in_label(self, pil_img):
         # Convert PIL image to QPixmap robustly, then set scaled pixmap to label

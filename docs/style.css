@@ -76,8 +76,10 @@ button:hover { background: #5a8fe9; }
 button:disabled { opacity: 0.5; cursor: wait; }
 
 .preview { flex: 1; display: flex; gap: 16px; min-width: 0; }
-.panel { flex: 1; min-width: 0; }
-.panel h3 { font-size: 14px; margin-bottom: 8px; color: #c0c0d8; }
+/* 长图（条漫可达 1:23）按宽度铺满再看高度会撑爆页面，这里限高并允许纵向滚动，
+   保证既能看到全宽细节，又不会把页面拉到几万像素 */
+.panel { flex: 1; min-width: 0; max-height: 80vh; overflow-y: auto; }
+.panel h3 { font-size: 14px; margin-bottom: 8px; color: #c0c0d8; position: sticky; top: 0; background: #14141f; z-index: 1; padding: 2px 0; }
 canvas {
   width: 100%;
   background: #101018;
@@ -145,3 +147,93 @@ label.inline {
   background-size: 16px 16px;
   background-position: 0 0, 0 8px, 8px -8px, -8px 0;
 }
+
+/* ---------- 分层逐层编辑 ---------- */
+.mini {
+  padding: 4px 10px; font-size: 12px;
+  background: #2a2a46; color: #dfe3ff;
+  border: 1px solid #3a3a5a; border-radius: 4px; cursor: pointer;
+}
+.mini:hover { background: #34345a; }
+.band-editor { margin-top: 8px; max-height: 320px; overflow-y: auto; }
+.band-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 6px; margin-top: 3px;
+  background: #232342; border-radius: 4px; font-size: 12px;
+}
+.band-name { width: 56px; color: #cfd3ff; }
+.band-range { width: 68px; color: #8f93b8; }
+.band-ratio { width: 52px; color: #8f93b8; text-align: right; }
+.band-head .band-toggle { flex: 1; text-align: left; }
+.band-head .band-solo { color: #9aa0c8; white-space: nowrap; }
+.band-slots { padding: 6px 8px 8px 16px; }
+.slot-row {
+  display: flex; align-items: center; gap: 4px; margin: 3px 0;
+}
+.slot-row select { width: auto; flex: 1; font-size: 11px; padding: 3px; }
+.slot-row input[type="range"] { width: 56px; accent-color: #6a9fff; }
+.slot-row .swatch { width: 14px; height: 14px; flex-shrink: 0; }
+.slot-row button { padding: 1px 7px; font-size: 12px; }
+.slot-actions { margin-top: 6px; display: flex; gap: 6px; }
+.slot-actions button { padding: 3px 8px; font-size: 11px; }
+
+/* ---------- 分层编辑器浮窗 ---------- */
+.float-win {
+  position: fixed; top: 70px; right: 24px;
+  width: 760px; max-width: calc(100vw - 48px); max-height: 84vh;
+  background: #1e1e36; border: 1px solid #3a3a5a; border-radius: 10px;
+  box-shadow: 0 14px 44px rgba(0,0,0,.6);
+  display: flex; flex-direction: column; z-index: 60;
+}
+.float-win.hidden { display: none; }
+.fw-title {
+  padding: 8px 12px; background: #262646; border-radius: 10px 10px 0 0;
+  cursor: move; user-select: none;
+  display: flex; justify-content: space-between; align-items: center; font-size: 13px;
+}
+.fw-close { cursor: pointer; color: #ff8a8a; font-size: 16px; line-height: 1; }
+.fw-body { display: flex; min-height: 0; flex: 1; }
+.fw-left { width: 262px; flex-shrink: 0; border-right: 1px solid #2c2c44;
+           overflow-y: auto; padding: 8px; }
+.fw-right { flex: 1; min-width: 0; padding: 10px; overflow-y: auto; }
+.band-item {
+  display: flex; gap: 6px; padding: 5px 6px; font-size: 12px;
+  border-radius: 4px; cursor: pointer;
+}
+.band-item:hover { background: #2a2a48; }
+.band-item.active { background: #35406b; }
+.bi-name { width: 52px; color: #dfe3ff; }
+.bi-range { width: 66px; color: #8f93b8; }
+.bi-tag { flex: 1; color: #9fd0a0; }
+.bi-ratio { color: #8f93b8; }
+.stage-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.stage-tabs button {
+  padding: 4px 12px; font-size: 12px;
+  background: #2a2a46; color: #cfd3ff;
+  border: 1px solid #3a3a5a; border-radius: 4px; cursor: pointer;
+}
+.stage-tabs button.active { background: #3f4f88; border-color: #5a6fb8; }
+.stage-wrap {
+  background: #12121f; border-radius: 6px; padding: 8px;
+  display: flex; justify-content: center; margin-bottom: 10px;
+}
+.stage-wrap canvas { image-rendering: pixelated; max-width: 100%; }
+.fw-slots-head { font-size: 12px; color: #b0b0c8; margin-bottom: 6px; }
+.slot-card { background: #232342; border-radius: 6px; padding: 6px; margin-bottom: 6px; }
+.slot-main { display: flex; gap: 4px; align-items: center; }
+.slot-main select { flex: 1; font-size: 11px; padding: 3px; }
+.slot-main button { padding: 2px 8px; }
+.slot-opts {
+  display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px;
+  font-size: 11px; color: #9aa0c8; align-items: center;
+}
+.slot-opts select { width: auto; font-size: 11px; padding: 2px 4px; }
+.slot-opts input[type="range"] { width: 62px; vertical-align: middle; }
+.fw-hint { font-size: 11px; color: #8f93b8; }
+
+/* ---------- 结果面板上的视图切换条 ---------- */
+.panel h3.with-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.view-bar { display: flex; align-items: center; gap: 6px; font-weight: normal; }
+.view-bar select { width: auto; padding: 2px 8px; font-size: 12px; }
+.view-bar .stage-tabs { margin: 0; }
+.view-bar .stage-tabs button { padding: 2px 9px; font-size: 11px; }

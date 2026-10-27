@@ -161,10 +161,16 @@ function loadFile(file) {
   const url = URL.createObjectURL(file);
   const img = new Image();
   img.onload = () => {
-    // 限制处理尺寸上限，避免大图卡顿
+    // 限制的是**总像素数**而不是长边：条漫长宽比可达 1:23，按长边限制会把宽度
+    // 压到几十像素（462x10800 缩到 64x1500），而且 srcData 也一起变小，处理结果
+    // 跟着失真。按面积限制则与普通大图一视同仁。
     let w = img.width, h = img.height;
-    const MAX = 1500;
-    if (Math.max(w, h) > MAX) { const s = MAX / Math.max(w, h); w = Math.round(w * s); h = Math.round(h * s); }
+    const MAX_PIXELS = 4000000;           // 4 MP，约等于 2000x2000
+    if (w * h > MAX_PIXELS) {
+      const s = Math.sqrt(MAX_PIXELS / (w * h));
+      w = Math.max(1, Math.round(w * s));
+      h = Math.max(1, Math.round(h * s));
+    }
     const cv = $('srcCanvas'); cv.width = w; cv.height = h;
     const ctx = cv.getContext('2d');
     ctx.drawImage(img, 0, 0, w, h);
