@@ -143,6 +143,13 @@ LAYER_EDGE_MODES = {
     '混合': 'hybrid',
 }
 LAYER_SPACES = ['Lab', 'RGB']
+LAYER_SIZES = [
+    (2,  '2×2（4 级阈值 · 色差 +77%，风格取舍）'),
+    (4,  '4×4（16 级 · 性价比最高）'),
+    (8,  '8×8（64 级）'),
+    (16, '16×16（256 级）'),
+    (32, '32×32（1024 级 · 无额外收益）'),
+]
 LAYER_MIX_MODES = ['4 色（重心混合，无损）', '3 色（三角形）', '2 色（线段）']
 LAYER_MIX_VALUES = [4, 3, 2]
 
@@ -1046,15 +1053,17 @@ class ImageDitherApp(QMainWindow):
         self.combo_layer_pattern.currentIndexChanged.connect(self._invalidate_layer_profile)
         ly.addWidget(self.combo_layer_pattern, 3, 1)
 
-        ly.addWidget(QLabel('图案阶数'), 3, 2)
-        self.spin_layer_size = QSpinBox()
-        self.spin_layer_size.setRange(2, 64)
-        self.spin_layer_size.setValue(16)
-        self.spin_layer_size.setToolTip(
-            '网点越细阶数越大。圆点超过 8 会跨越感知块、块内只剩寥寥几环，'
-            '局部平均严重偏离，慎用')
-        self.spin_layer_size.valueChanged.connect(self._invalidate_layer_profile)
-        ly.addWidget(self.spin_layer_size, 3, 3)
+        ly.addWidget(QLabel('图案单元'), 3, 2)
+        self.combo_layer_size = QComboBox()
+        for _v, _label in LAYER_SIZES:
+            self.combo_layer_size.addItem(_label, _v)
+        self.combo_layer_size.setCurrentIndex(3)          # 默认 16×16
+        self.combo_layer_size.setToolTip(
+            '图案单元越小，抖动可用的阈值档位越少：2×2 只有 4 档，区域平均色必然偏'
+            '（实测 ΔE 1.51，比 8×8 差 77%），加层数也补不回来。4×4 就基本够（0.865），'
+            '8×8 以上无收益。圆点图案别超过 8，否则一个点跨越多个感知块')
+        self.combo_layer_size.currentIndexChanged.connect(self._invalidate_layer_profile)
+        ly.addWidget(self.combo_layer_size, 3, 3)
 
         ly.addWidget(QLabel('混合色数'), 4, 0)
         self.combo_layer_mix = QComboBox()
@@ -1304,7 +1313,7 @@ class ImageDitherApp(QMainWindow):
         if p is None or not hasattr(self, 'combo_layer_pattern'):
             return p
         pat = self.combo_layer_pattern.currentText()
-        size = int(self.spin_layer_size.value())
+        size = int(self.combo_layer_size.currentData() or 8)
         for b in p.bands:
             b.pattern = pat
             b.size = size
@@ -1315,7 +1324,7 @@ class ImageDitherApp(QMainWindow):
     def on_layer_preset_change(self):
         """切预设时把「每层色数 / 网点图案 / 阶数」一并联动过去。"""
         d = LAYER_PRESET_DEFAULTS.get(self.combo_layer_preset.currentText())
-        ws = (self.spin_layer_colors, self.combo_layer_pattern, self.spin_layer_size)
+        ws = (self.spin_layer_colors, self.combo_layer_pattern, self.combo_layer_size)
         if d:
             K, pat, size = d
             for w in ws:
@@ -1323,7 +1332,8 @@ class ImageDitherApp(QMainWindow):
             self.spin_layer_colors.setValue(K)
             if self.combo_layer_pattern.findText(pat) >= 0:
                 self.combo_layer_pattern.setCurrentText(pat)
-            self.spin_layer_size.setValue(size)
+            _i = self.combo_layer_size.findData(size)
+            self.combo_layer_size.setCurrentIndex(_i if _i >= 0 else 1)
             for w in ws:
                 w.blockSignals(False)
         self._invalidate_layer_profile()
