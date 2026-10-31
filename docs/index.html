@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
-  <link rel="stylesheet" href="style.css?v=ee8e4285">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css?v=ecc094e5">
 </head>
 <body>
   <header>
@@ -17,153 +18,242 @@
     <button class="tab" data-tab="text">汉字像素图</button>
   </nav>
 
-  <div class="container" id="panel-image">
-    <div class="controls">
-      <div class="field">
-        <div id="dropZone">拖拽图片到这里，或点击选择</div>
-        <input type="file" id="fileInput" accept="image/*" style="display:none">
-      </div>
+  <!-- ===================== 图像抖动：左参数栏 / 中央工作区 / 右编辑栏 ===================== -->
+  <div class="workspace" id="panel-image">
 
-      <div class="field">
-        <label>压缩比例（或直接指定尺寸）</label>
+    <!-- ---------------- 左栏：图像 / 尺寸 / 方法参数 / 调色板 ---------------- -->
+    <aside class="rail rail-left">
+      <section class="card">
+        <div class="card-head"><h3>图像</h3></div>
+        <div id="dropZone" class="drop">拖拽图片到这里，或点击选择</div>
+        <input type="file" id="fileInput" accept="image/*" style="display:none">
+        <div class="meta" id="imgMeta">未选择</div>
+        <canvas id="srcCanvas" class="thumb hidden"></canvas>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h3>输出尺寸</h3></div>
         <div class="row">
           <input type="range" id="compression" min="1" max="100" value="100" style="flex:1">
-          <input type="number" id="compNum" min="1" max="100" value="100" style="width:64px">
-          <span>%</span>
+          <input type="number" id="compNum" min="1" max="100" value="100" class="num">
         </div>
-        <div class="row" style="margin-top:6px">
-          <input type="number" id="widthInput" placeholder="宽 px" min="1" style="flex:1; min-width:0">
-          <input type="number" id="heightInput" placeholder="高 px" min="1" style="flex:1; min-width:0">
+        <div class="row">
+          <input type="number" id="widthInput" placeholder="宽 px" min="1" class="num wide">
+          <input type="number" id="heightInput" placeholder="高 px" min="1" class="num wide">
         </div>
-        <div class="hint">填宽或高 = 按比例；都填 = 强制尺寸；都不填 = 按压缩比例</div>
-      </div>
+        <div class="hint">按比例缩放；填宽或高任一，另一个按比例算</div>
+      </section>
 
-      <div class="field">
-        <label>调色板（<span id="palCount">63</span>/63 选中，<span class="paid-mark">■</span> = 付费色）</label>
-        <div class="pal-buttons">
-          <button class="small" id="selAll" title="全部选中">全选</button>
-          <button class="small" id="selNone" title="全部取消">全不选</button>
-          <button class="small" id="selFree" title="只选免费色">选免费</button>
-          <button class="small" id="selPaid" title="只选付费色">选付费</button>
-        </div>
-        <div id="paletteSwatches"></div>
-      </div>
-
-      <div class="field">
-        <label>抖动方法</label>
+      <section class="card">
+        <div class="card-head"><h3>抖动方法</h3></div>
         <select id="method">
           <option value="projection" selected>分层投影混色</option>
           <option value="barycentric">重心混合</option>
           <option value="ordered">有序抖动</option>
           <option value="error_diffusion">误差扩散</option>
         </select>
-      </div>
 
-      <!-- 分层投影混色参数 -->
-      <div id="projParams" class="params">
-        <div class="field">
-          <label>层数</label>
-          <input type="number" id="projBands" min="2" max="64" value="24">
-          <div class="hint">按明暗分几层；层越细，少量投影色就覆盖得越准（建议 16 起）</div>
+        <div id="orderedParams" class="params hidden">
+          <div class="field">
+            <label>强度 <span class="val" id="strengthVal">64</span></label>
+            <input type="range" id="strength" min="0" max="128" value="64">
+          </div>
+          <div class="field">
+            <label>色彩空间</label>
+            <select id="colorSpace"><option>RGB</option><option>Lab</option><option>HSV</option></select>
+          </div>
+          <div class="field">
+            <label>阈值矩阵</label>
+            <select id="matrix"></select>
+          </div>
         </div>
-        <div class="field">
-          <label>每层色数</label>
-          <input type="number" id="projColors" min="2" max="32" value="8">
-          <div class="hint">每层聚出这么多种投影色（可不在调色板内）；越大投影越准、色差越低</div>
+
+        <div id="edParams" class="params hidden">
+          <div class="field">
+            <label>扩散核</label>
+            <select id="filter"><option>FS</option><option>Jarvis</option><option>Stucki</option></select>
+          </div>
+          <div class="field">
+            <label>alpha <span class="val" id="alphaVal">1.00</span></label>
+            <input type="range" id="alpha" min="0" max="1" step="0.05" value="1">
+          </div>
         </div>
-        <div class="field">
-          <label>分层依据</label>
-          <select id="projEdge">
-            <option value="linear">绝对明度（保色彩）</option>
-            <option value="quantile">自适应等频（保细节）</option>
-          </select>
+
+        <div id="baryParams" class="params hidden">
+          <div class="field">
+            <label>阈值矩阵</label>
+            <select id="baryMatrix"></select>
+          </div>
+          <div class="field">
+            <label>扰动强度 <span class="val" id="baryStrengthVal">64</span></label>
+            <input type="range" id="baryStrength" min="0" max="128" value="64">
+          </div>
+          <div class="field">
+            <label><input type="checkbox" id="gamut"> 凸包投影（改善饱和色）</label>
+            <label><input type="checkbox" id="projLab" checked> 投影走 Lab（ΔE76 口径）</label>
+          </div>
+          <div class="field">
+            <label>面内精修 <span class="val" id="refineVal">2</span> 轮</label>
+            <input type="range" id="refine" min="0" max="4" step="1" value="2">
+          </div>
+          <div class="field">
+            <label>混合跨度上限 <span class="val" id="mixSpanVal">35</span></label>
+            <input type="range" id="mixSpan" min="0" max="60" step="5" value="35">
+          </div>
+          <div class="field">
+            <label>权重截断 <span class="val" id="minWeightVal">0.00</span></label>
+            <input type="range" id="minWeight" min="0" max="0.5" step="0.05" value="0">
+          </div>
+          <div class="field">
+            <label>边缘保护阈值 <span class="val" id="edgeGuardVal">0</span></label>
+            <input type="range" id="edgeGuard" min="0" max="50" value="0">
+          </div>
         </div>
-        <div class="field">
-          <label>色彩空间</label>
-          <select id="projSpace"><option>Lab</option><option>RGB</option></select>
+
+        <div id="projParams" class="params">
+          <div class="field">
+            <label>层数</label>
+            <input type="number" id="projBands" min="2" max="64" value="24">
+          </div>
+          <div class="field">
+            <label>每层色数</label>
+            <input type="number" id="projColors" min="2" max="32" value="8">
+          </div>
+          <div class="field">
+            <label>每色用几个板内色混合</label>
+            <select id="projMixColors">
+              <option value="4" selected>4 色（四面体重心，最准）</option>
+              <option value="3">3 色（三角形）</option>
+              <option value="2">2 色（线段，更硬朗）</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>分层依据</label>
+            <select id="projEdge">
+              <option value="linear">绝对明度（保色彩）</option>
+              <option value="quantile">自适应等频（保细节）</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>色彩空间</label>
+            <select id="projSpace"><option>Lab</option><option>RGB</option></select>
+          </div>
+          <div class="field">
+            <label>阈值矩阵（阶数 × 图案）</label>
+            <div class="row">
+              <select id="projMatrixSize"><option value="4" selected>4×4</option><option value="2">2×2</option></select>
+              <select id="projMatrix"></select>
+            </div>
+          </div>
         </div>
-        <div class="field">
-          <label>阈值矩阵</label>
-          <select id="projMatrix"><option>bayer</option><option>clustered</option><option>diagonal</option><option>spiral</option></select>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h3>调色板 <span class="badge" id="palCount">63</span>/63</h3></div>
+        <div class="pal-buttons">
+          <button class="small" id="selAll" title="全部选中">全选</button>
+          <button class="small" id="selNone" title="全部取消">全不选</button>
+          <button class="small" id="selFree" title="只选免费色">选免费</button>
+          <button class="small" id="selPaid" title="只选付费色">选付费</button>
         </div>
-        <div class="hint">
-          每层先投影到少量颜色（大片同色），再逐个用调色板色混合出该投影色 ——
-          输出保证全部落在调色板内。
+        <div id="paletteSwatches" class="palette"></div>
+      </section>
+    </aside>
+
+    <!-- ---------------- 中央：工作区（唯一画布） ---------------- -->
+    <main class="stage">
+      <div class="stage-bar">
+        <div class="views" id="viewTabs">
+          <button data-view="result" class="active">成品</button>
+          <button data-view="source" class="layer-only">原色</button>
+          <button data-view="projection" class="layer-only">投影色</button>
+          <button data-view="final" class="layer-only">抖动色</button>
+          <label class="inline layer-toggle layer-only">
+            <input type="checkbox" id="layerOnly"> 只看当前层
+          </label>
+        </div>
+        <div class="stage-actions">
+          <span class="zoom" id="zoomLabel">适配</span>
+          <button class="mini" id="zoomFit">适应</button>
+          <button class="mini" id="zoom100">1:1</button>
+          <button id="enterEditor" class="primary">进入分层编辑器</button>
+          <button id="exitEditor" class="hidden">退出编辑器</button>
         </div>
       </div>
-
-      <!-- 有序抖动参数 -->
-      <div id="orderedParams" class="params hidden">
-        <div class="field">
-          <label>强度 <span id="strengthVal">64</span></label>
-          <input type="range" id="strength" min="0" max="128" value="64">
+      <div class="stage-body" id="stageBody">
+        <div class="canvas-fit" id="canvasFit">
+          <canvas id="dstCanvas"></canvas>
+          <canvas id="cursorLayer" class="cursor-layer"></canvas>
         </div>
-        <div class="field">
-          <label>色彩空间</label>
-          <select id="colorSpace"><option>RGB</option><option>Lab</option></select>
-        </div>
-        <div class="field">
-          <label>阈值矩阵</label>
-          <select id="matrix"><option>bayer</option><option>clustered</option><option>diagonal</option><option>spiral</option></select>
-        </div>
+        <div class="stage-hint" id="stageHint">选择图片后点「处理」出图</div>
       </div>
-
-      <!-- 误差扩散参数 -->
-      <div id="edParams" class="params hidden">
-        <div class="field">
-          <label>滤波核</label>
-          <select id="filter"><option>FS</option><option>Jarvis</option><option>Stucki</option></select>
-        </div>
-        <div class="field">
-          <label>alpha <span id="alphaVal">1.00</span></label>
-          <input type="range" id="alpha" min="0" max="1" step="0.05" value="1">
-        </div>
-      </div>
-
-      <!-- 重心混合参数 -->
-      <div id="baryParams" class="params hidden">
-        <div class="field">
-          <label>阈值矩阵</label>
-          <select id="baryMatrix"><option>bayer</option><option>clustered</option><option>diagonal</option><option>spiral</option></select>
-        </div>
-        <div class="field">
-          <label>扰动强度 <span id="baryStrengthVal">64</span></label>
-          <input type="range" id="baryStrength" min="0" max="128" value="64">
-        </div>
-        <div class="field">
-          <label><input type="checkbox" id="gamut"> 凸包投影（改善饱和色）</label>
-        </div>
-        <div class="field">
-          <label><input type="checkbox" id="projLab" checked> 投影走 Lab（ΔE76 口径）</label>
-        </div>
-        <div class="field">
-          <label>面内精修 <span id="refineVal">2</span> 轮</label>
-          <input type="range" id="refine" min="0" max="4" step="1" value="2">
-        </div>
-        <div class="field">
-          <label>混合跨度上限 <span id="mixSpanVal">35</span>（压黑点）</label>
-          <input type="range" id="mixSpan" min="0" max="60" step="5" value="35">
-        </div>
-        <div class="field">
-          <label>权重截断 <span id="minWeightVal">0.00</span>（缓解弥散）</label>
-          <input type="range" id="minWeight" min="0" max="0.5" step="0.05" value="0">
-        </div>
-        <div class="field">
-          <label>边缘保护阈值 <span id="edgeGuardVal">0</span></label>
-          <input type="range" id="edgeGuard" min="0" max="50" value="0">
-        </div>
-      </div>
-
-      <div class="buttons">
+      <div class="stage-foot">
         <button id="processBtn">处理</button>
         <button id="downloadBtn">下载结果</button>
       </div>
-    </div>
+    </main>
 
-    <div class="preview">
-      <div class="panel"><h3>原图</h3><canvas id="srcCanvas"></canvas></div>
-      <div class="panel"><h3>结果</h3><canvas id="dstCanvas"></canvas></div>
-    </div>
+    <!-- ---------------- 右栏：图层 / 色阶入口 / 画笔 / 颜色槽（仅编辑器） ---------------- -->
+    <aside class="rail rail-right" id="railRight">
+      <section class="card">
+        <div class="card-head">
+          <h3>图层 <span class="badge" id="bandCount">-</span></h3>
+          <button class="mini" id="openEdge">阈值…</button>
+        </div>
+        <div class="band-list" id="bandList"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h3>色阶</h3>
+          <button class="mini" id="openGrade">调整…</button>
+        </div>
+        <div class="hint" id="gradeSummary">黑场 0.00 / 白场 1.00 / 中间调 1.00</div>
+        <div class="row">
+          <span class="badge" id="lockBadge">未锁定</span>
+          <button class="mini hidden" id="unlockBtn" title="清除全部手绘，之后可以改分层与尺寸">解锁并清除上色</button>
+        </div>
+        <div class="hint" id="lockHint"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h3>画笔 <span class="badge" id="brushState">画笔</span></h3>
+        </div>
+        <div class="row">
+          <span class="hint">大小</span>
+          <input type="range" id="brushSize" min="1" max="40" value="6" style="flex:1">
+          <span class="hint" id="brushSizeVal">6</span>
+        </div>
+        <div class="row">
+          <label class="inline"><input type="checkbox" id="brushErase"> 橡皮</label>
+          <label class="inline"><input type="checkbox" id="brushCrossBand"> 跨层涂</label>
+        </div>
+        <div class="row">
+          <label class="inline"><input type="checkbox" id="highlightOn" checked> 高亮当前色</label>
+        </div>
+        <div class="row">
+          <button class="mini" id="undoBtn" title="Ctrl+Z">撤销</button>
+          <button class="mini" id="redoBtn" title="Ctrl+Shift+Z">重做</button>
+          <button class="mini" id="brushClear">清除本层手绘</button>
+        </div>
+        <div class="brush-current">
+          <span class="swatch big" id="brushSwatch"></span>
+          <span id="brushLabel">未选颜色（点下面的色块）</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h3>这一层的颜色</h3>
+          <span>
+            <button class="mini" id="addSlot">+ 颜色</button>
+            <button class="mini" id="importAuto">导入自动</button>
+          </span>
+        </div>
+        <div class="slot-list" id="slotList"></div>
+      </section>
+    </aside>
   </div>
 
   <!-- ===================== 汉字像素图 ===================== -->
@@ -304,9 +394,48 @@
     </div>
   </div>
 
-  <script src="delaunay.js?v=ee8e4285"></script>
-  <script src="dither.js?v=ee8e4285"></script>
-  <script src="textpixel.js?v=ee8e4285"></script>
-  <script src="app.js?v=ee8e4285"></script>
+<!-- ===================== 色阶面板（可关闭） ===================== -->
+<div id="gradePanel" class="float-panel hidden">
+  <div class="fp-title"><span>色阶 · 截掉两端的灰</span><span class="fp-close" id="gradeClose">x</span></div>
+  <canvas id="gradeHist" width="560" height="96"></canvas>
+  <div class="grade-row"><span class="grade-name">黑场</span>
+    <input type="range" id="gradeBlack" min="0" max="0.9" step="0.01" value="0">
+    <span class="grade-val" id="gradeBlackVal">0.00</span></div>
+  <div class="grade-row"><span class="grade-name">白场</span>
+    <input type="range" id="gradeWhite" min="0.1" max="1" step="0.01" value="1">
+    <span class="grade-val" id="gradeWhiteVal">1.00</span></div>
+  <div class="grade-row"><span class="grade-name">中间调</span>
+    <input type="range" id="gradeGamma" min="0.3" max="3" step="0.05" value="1">
+    <span class="grade-val" id="gradeGammaVal">1.00</span></div>
+  <div class="row" style="justify-content:flex-end; margin-top:10px">
+    <button class="mini" id="gradeReset">复位</button>
+    <button class="mini primary" id="gradeApply">应用</button>
+  </div>
+  <div class="hint">PS 输入白场语义：先按黑/白场拉伸，超出部分钳到端点 —— 灰底会被压成纯黑或纯白</div>
+</div>
+
+<!-- ===================== 单个颜色槽的参数弹窗 ===================== -->
+<div id="slotDialog" class="float-panel hidden">
+  <div class="fp-title"><span id="slotDialogTitle">颜色参数</span><span class="fp-close" id="slotDialogClose">x</span></div>
+  <div id="slotDialogBody" class="slot-dialog-body"></div>
+  <div class="row" style="justify-content:flex-end; padding:0 14px">
+    <button class="mini" id="slotDialogDel">删除这个颜色</button>
+    <button class="mini primary" id="slotDialogOk">完成</button>
+  </div>
+</div>
+
+<!-- ===================== 分层阈值面板（可关闭） ===================== -->
+<div id="edgePanel" class="float-panel hidden">
+  <div class="fp-title"><span>分层阈值</span><span class="fp-close" id="edgeClose">x</span></div>
+  <canvas id="edgeBar" width="560" height="120"></canvas>
+  <div class="hint" id="edgeVals"></div>
+  <div class="hint">拖动面板上的细线调整分界；两端固定。背景直方图标出像素落在哪。</div>
+</div>
+
+  <script src="delaunay.js?v=ecc094e5"></script>
+  <script src="dither.js?v=ecc094e5"></script>
+  <script src="textpixel.js?v=ecc094e5"></script>
+  <script src="app.js?v=ecc094e5"></script>
+
 </body>
 </html>

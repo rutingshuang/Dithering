@@ -4,32 +4,26 @@
 // ============================================================
 
 // ---------- 抖动矩阵 ----------
+// 阈值矩阵：键名带阶数后缀，2×2 与 4×4 各一套。
+// matrixVals() 按 mat.length 自动算分阶，新增阶数不用改它。
 const DITHER_MATRICES = {
-  bayer:     [[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]],
-  clustered: [[14,11,8,13],[10,6,4,9],[7,2,0,5],[12,3,1,15]],
-  diagonal:  [[15,11,5,0],[10,14,9,4],[3,8,13,7],[1,2,9,12]],
-  spiral:    [[9,1,6,14],[3,11,15,4],[5,7,0,8],[12,13,10,2]],
+  bayer4:     [[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]],
+  clustered4: [[14,11,8,13],[10,6,4,9],[7,2,0,5],[12,3,1,15]],
+  diagonal4:  [[15,11,5,0],[10,14,9,4],[3,8,13,7],[1,2,9,12]],
+  spiral4:    [[9,1,6,14],[3,11,15,4],[5,7,0,8],[12,13,10,2]],
+  // 2×2：只有 4 级阈值，颗粒更粗、色差更大，是「风格取舍」不是「更优」
+  bayer2:     [[0,2],[3,1]],
+  // 2×2 的点簇：列优先递增，点会从左上角长出来；与 bayer2 结果不同才看得出区别
+  clustered2: [[0,1],[2,3]],
+  diagonal2:  [[3,1],[0,2]],
+  spiral2:    [[1,3],[2,0]],
 };
+// 旧键名兼容（外部脚本/工程文件里可能还写着 'bayer'）
+DITHER_MATRICES.bayer = DITHER_MATRICES.bayer4;
+DITHER_MATRICES.clustered = DITHER_MATRICES.clustered4;
+DITHER_MATRICES.diagonal = DITHER_MATRICES.diagonal4;
+DITHER_MATRICES.spiral = DITHER_MATRICES.spiral4;
 
-// 圆形点簇（调幅网点 / AM 屏）：按欧氏距离从中心向外生长，得到圆点，
-// 而不是 clustered 的方形点。同阶数下色差比方形低约 13%，观感更接近印刷网点。
-// 周期别超过 8：更大的点会跨越感知块，块内只剩寥寥几环，局部平均严重偏离。
-function roundDotMatrix(n) {
-  const c = (n - 1) / 2;
-  const cells = [];
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      const dy = y - c, dx = x - c;
-      cells.push({ y, x, r: Math.hypot(dy, dx), a: Math.atan2(dy, dx) });
-    }
-  }
-  cells.sort((p, q) => (p.r - q.r) || (p.a - q.a));
-  const m = [];
-  for (let y = 0; y < n; y++) m.push(new Array(n).fill(0));
-  cells.forEach((cell, i) => { m[cell.y][cell.x] = i; });
-  return m;
-}
-DITHER_MATRICES.rounddot = roundDotMatrix(8);
 
 // ---------- 颜色转换 ----------
 function rgbToLab(rgb) {
@@ -762,94 +756,443 @@ function mixWeights(p, D) {
   return { idx: pr.idx, w: ww.map(v => v / sum) };
 }
 
-function projectionDither(img, palette, D, opts) {
+// ============================================================
+// 分层编辑器引擎
+// 分析（分层 + 聚类）与渲染（投影色 → 抖动色）彻底分开：
+//   analyzeProjection  只依赖「色阶 + 分界 + 每层色数」
+//   projectionDither   吃一份 plan + 手动颜色槽 + 手绘标签，渲染任一阶段
+// 这样拖分界、改色、画笔涂抹都不需要重跑 k-means。
+// ============================================================
+
+// 色阶：PS 输入白场语义 —— 先按 black/white 拉伸，再施加 gamma 中间调
+function lumaCurve(L, black, white, gamma) {
+  const span = Math.max(1e-6, white - black);
+  let v = (L - black) / span;
+  v = v < 0 ? 0 : (v > 1 ? 1 : v);
+  if (gamma && gamma !== 1) v = Math.pow(v, gamma);
+  return v;
+}
+
+// 分析：分层、分桶、每层聚类出投影色与其混合配方
+// opts 支持：bands, colors, clusterSpace, edgeMode, black, white, gamma, edges(覆盖分界)
+function analyzeProjection(img, D, opts) {
   opts = opts || {};
   const { width, height, data } = img;
   const npix = width * height;
   const nBands = Math.max(2, Math.min(64, opts.bands ?? 24));
   const K = Math.max(2, Math.min(32, opts.colors ?? 8));
   const useLab = (opts.clusterSpace || 'Lab') === 'Lab';
-  const mat = DITHER_MATRICES[opts.matrix || 'bayer'];
-  const { m, ths } = matrixVals(mat, 0);
-  const out = new Uint8ClampedArray(data.length);
+  const black = Math.min(opts.black ?? 0, 0.98);
+  const white = Math.max(opts.white ?? 1, black + 0.02);
+  const gamma = opts.gamma ?? 1;
 
-  // ---- 每个像素的明度 L*，以及（可选）Lab 缓存 ----
   const luma = new Float32Array(npix);
   const labCache = new Float32Array(npix * 3);
   const opaque = new Uint8Array(npix);
   for (let i = 0; i < npix; i++) {
     const o = i * 4;
-    out[i * 4 + 3] = data[o + 3];
-    if (data[o + 3] === 0) { out[o + 3] = 0; continue; }
+    if (data[o + 3] === 0) continue;
     opaque[i] = 1;
     const lab = rgbToLab([data[o], data[o + 1], data[o + 2]]);
-    luma[i] = lab[0] / 100;
+    luma[i] = lumaCurve(lab[0] / 100, black, white, gamma);
     labCache[i * 3] = lab[0]; labCache[i * 3 + 1] = lab[1]; labCache[i * 3 + 2] = lab[2];
   }
 
-  // ---- 分层边界：linear 按明度等分（保色彩）/ quantile 按图像分布等频（保细节）----
-  const edges = new Float64Array(nBands + 1);
-  if (opts.edgeMode === 'quantile') {
-    const sorted = Float32Array.from(luma).sort();
-    for (let k = 0; k <= nBands; k++) {
-      const idx = Math.min(npix - 1, Math.max(0, Math.round(k / nBands * (npix - 1))));
-      edges[k] = sorted[idx];
-    }
-    edges[0] = 0; edges[nBands] = 1;
-    for (let k = 1; k <= nBands; k++) if (edges[k] < edges[k - 1]) edges[k] = edges[k - 1];
+  let edges;
+  if (opts.edges && opts.edges.length === nBands + 1) {
+    edges = Float64Array.from(opts.edges);
   } else {
-    for (let k = 0; k <= nBands; k++) edges[k] = k / nBands;
+    edges = new Float64Array(nBands + 1);
+    if (opts.edgeMode === 'quantile') {
+      const sorted = Float32Array.from(luma).sort();
+      for (let k = 0; k <= nBands; k++) {
+        const idx = Math.min(npix - 1, Math.max(0, Math.round(k / nBands * (npix - 1))));
+        edges[k] = sorted[idx];
+      }
+      edges[0] = 0; edges[nBands] = 1;
+    } else {
+      for (let k = 0; k <= nBands; k++) edges[k] = k / nBands;
+    }
   }
+  for (let k = 1; k <= nBands; k++) if (edges[k] < edges[k - 1]) edges[k] = edges[k - 1];
 
-  // ---- 按层分桶（一次遍历，避免每层重扫全图）----
+  const plan = { width, height, npix, nBands, edges, bands: [], opaque, luma,
+                 labCache, useLab, K, black, white, gamma, bandOf: new Int32Array(npix) };
+  bucketBands(plan, img, true, D);
+  return plan;
+}
+
+// 把像素按当前 edges 分进各层。cluster=true 时重新聚类投影色（分析 / 重分析），
+// 否则只重分桶（用户拖了分界，保留已聚出的投影色与配方）
+function bucketBands(plan, img, cluster, D) {
+  const { npix, nBands, edges, luma, opaque } = plan;
+  const src = img ? img.data : null;
   const buckets = Array.from({ length: nBands }, () => []);
   for (let i = 0; i < npix; i++) {
-    if (!opaque[i]) continue;
+    if (!opaque[i]) { plan.bandOf[i] = -1; continue; }
     let b = 0;
     while (b < nBands - 1 && luma[i] >= edges[b + 1]) b++;
+    plan.bandOf[i] = b;
     buckets[b].push(i);
   }
-
   const SAMPLE = 2000;
+  const old = plan.bands || [];
+  const bands = [];
   for (let b = 0; b < nBands; b++) {
     const members = buckets[b];
-    if (!members.length) continue;
-
-    // ---- 第 1 步：聚类投影色 ----
-    const step = Math.max(1, Math.floor(members.length / SAMPLE));
-    const samples = [];
-    for (let i = 0; i < members.length; i += step) {
-      const p = members[i];
-      samples.push(useLab
-        ? [labCache[p * 3], labCache[p * 3 + 1], labCache[p * 3 + 2]]
-        : [data[p * 4], data[p * 4 + 1], data[p * 4 + 2]]);
-    }
-    const centers = kmeans(samples, K, b * 7919 + 13, 20);
-    const projRGB = centers.map(c => useLab ? labToRgb(c) : c);
-
-    // ---- 第 2 步：每个投影色单独求混合权重（同一权重负责该颜色的全部像素）----
-    const mixes = projRGB.map(c => mixWeights(c, D));
-
-    // ---- 投影分配 + 阈值选色 ----
-    for (const p of members) {
-      const o = p * 4;
-      const r = data[o], g = data[o + 1], bl = data[o + 2];
-      let bj = 0, bd = Infinity;
-      for (let j = 0; j < projRGB.length; j++) {
-        const c = projRGB[j];
-        const d = (r - c[0]) ** 2 + (g - c[1]) ** 2 + (bl - c[2]) ** 2;
-        if (d < bd) { bd = d; bj = j; }
+    const prev = old[b];
+    const info = { index: b, lo: edges[b], hi: edges[b + 1], members,
+                   count: members.length, ratio: npix ? members.length / npix : 0,
+                   projRGB: [], mixes: [] };
+    if (members.length) {
+      // 需要重新聚类的情形：显式重分析；或这一层上一轮是空的（拖分界把像素推进
+      // 了原本没有投影色的层），此时没有可复用的 projRGB，必须补一次局部聚类，
+      // 否则这一层的像素会没有任何颜色可落。
+      const needCluster = cluster || !prev || !prev.projRGB || !prev.projRGB.length;
+      if (needCluster) {
+        const step = Math.max(1, Math.floor(members.length / SAMPLE));
+        const samples = [];
+        for (let i = 0; i < members.length; i += step) {
+          const q = members[i];
+          samples.push(plan.useLab
+            ? [plan.labCache[q * 3], plan.labCache[q * 3 + 1], plan.labCache[q * 3 + 2]]
+            : [src[q * 4], src[q * 4 + 1], src[q * 4 + 2]]);
+        }
+        const centers = kmeans(samples, plan.K, b * 7919 + 13, 20);
+        info.projRGB = centers.map(c => plan.useLab ? labToRgb(c) : c);
+        info.mixes = info.projRGB.map(c => mixWeights(c, D));
+      } else {
+        // 只重分桶：投影色和它们的混合配方都不变，直接复用（这一步省掉凸包求值）
+        info.projRGB = prev.projRGB;
+        info.mixes = (prev.mixes && prev.mixes.length)
+          ? prev.mixes
+          : info.projRGB.map(c => mixWeights(c, D));
       }
-      const mx = mixes[bj];
-      const tt = ths[((p / width | 0) % m) * m + (p % width) % m];
-      let acc = 0, sel = mx.w.length - 1;
-      for (let k = 0; k < mx.w.length; k++) { acc += mx.w[k]; if (acc >= tt) { sel = k; break; } }
-      const c = D.palette[mx.idx[sel]];
-      out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; out[o + 3] = 255;
+    }
+    bands.push(info);
+  }
+  plan.bands = bands;
+  return plan;
+}
+
+// 槽的目标色：色号 → 调色板色；数组 → 自定义投影色
+function slotRGB(sv, pal) {
+  return (typeof sv.color === 'number') ? pal[sv.color] : sv.color;
+}
+
+// 槽级混合权重：凸包内直接用 RGB 四面体，凸包外按需走 Lab 投影 + 面内精修
+function slotMixWeights(target, D, sv) {
+  if (sv.projLab === false) return mixWeights(target, D);
+  ensureLabData(D);
+  const pLab = rgbToLab(target);
+  const gsize = D.gridSize, step = 256 / gsize;
+  const c0 = Math.min(gsize - 1, Math.max(0, (target[0] / step) | 0));
+  const c1 = Math.min(gsize - 1, Math.max(0, (target[1] / step) | 0));
+  const c2 = Math.min(gsize - 1, Math.max(0, (target[2] / step) | 0));
+  let t = -1;
+  if (D.grid) {
+    t = D.grid[(c0 * gsize + c1) * gsize + c2];
+    if (t < 0) t = findContaining(target, D);
+  } else {
+    t = findContaining(target, D);
+  }
+  if (t >= 0) return mixWeights(target, D);
+  if (sv.gamut === false) return mixWeights(target, D);
+  const pr = projectToHullLab(pLab, D);
+  const w = refineOnFaceLab(pLab, pr.idx, pr.w.slice(), D, sv.refine ?? 2);
+  let sum = 0;
+  const ww = [];
+  for (let k = 0; k < 3; k++) { const x = Math.max(0, w[k]); ww.push(x); sum += x; }
+  if (sum <= 0) return { idx: pr.idx, w: [1 / 3, 1 / 3, 1 / 3] };
+  return { idx: pr.idx, w: ww.map(v => v / sum) };
+}
+
+// 限制混合用到的板内色个数：4=四面体（原样）/ 3=丢最小权 / 2=留最大两权。
+// 与桌面版 layered_dither._mix_weights_k 的枚举式实现不完全等价（这里直接截断
+// 已有的四面体权重，省掉 C(n,3) 枚举），但「用几个色」这个语义一致，
+// 落盘内也仍然成立。k=2 时端点跨度太大会退成单色平涂，避免异色互补。
+function restrictMix(m, k, pal, spanLimit) {
+  if (!m || !m.w || k >= 4 || m.w.length <= k) return m;
+  const order = m.w.map((w, i) => [w, i]).sort((a, b) => b[0] - a[0]);
+  const keep = order.slice(0, Math.max(1, k));
+  if (keep.length === 2 && spanLimit > 0 && pal) {
+    // 两色混合：两端颜色 Lab 距离太大就退成单色平涂，避免异色互补出噪点
+    const la = rgbToLab(pal[m.idx[keep[0][1]]] || [0, 0, 0]);
+    const lb = rgbToLab(pal[m.idx[keep[1][1]]] || [0, 0, 0]);
+    if (Math.hypot(la[0] - lb[0], la[1] - lb[1], la[2] - lb[2]) > spanLimit) {
+      return { idx: [m.idx[keep[0][1]]], w: [1] };
     }
   }
-  // 透明像素
-  for (let i = 0; i < npix; i++) if (!opaque[i]) { out[i * 4 + 3] = 0; }
+  const sum = keep.reduce((acc, o) => acc + o[0], 0);
+  if (sum <= 0) return { idx: [m.idx[keep[0][1]]], w: [1] };
+  return { idx: keep.map(o => m.idx[o[1]]), w: keep.map(o => o[0] / sum) };
+}
+
+function pruneMix(m, minWeight) {
+  if (!m || !(minWeight > 0)) return m;
+  let sum = 0;
+  for (let k = 0; k < m.w.length; k++) { if (m.w[k] < minWeight) m.w[k] = 0; sum += m.w[k]; }
+  if (sum > 0) for (let k = 0; k < m.w.length; k++) m.w[k] /= sum;
+  return m;
+}
+
+// 整图二维误差扩散。结果只作为「ed 方法」像素的贴图来源：
+// 扩散本身在整图上正常进行（误差不会在像素间丢失），其它方法各自的像素不受影响。
+function diffuseImage2D(img, palette, opts) {
+  opts = opts || {};
+  const { width, height, data } = img;
+  const weights = ED_FILTERS[opts.filter || 'FS'];
+  const alpha = opts.alpha ?? 1.0;
+  const arr = new Float32Array(width * height * 3);
+  const alphaCh = new Uint8Array(width * height);
+  for (let i = 0; i < width * height; i++) {
+    arr[i * 3] = data[i * 4]; arr[i * 3 + 1] = data[i * 4 + 1]; arr[i * 3 + 2] = data[i * 4 + 2];
+    alphaCh[i] = data[i * 4 + 3];
+  }
+  const out = new Uint8ClampedArray(data.length);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      if (alphaCh[i] === 0) continue;
+      const old = [arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]];
+      const c = palette[nearestRGBIdx(old, palette)];
+      out[i * 4] = c[0]; out[i * 4 + 1] = c[1]; out[i * 4 + 2] = c[2]; out[i * 4 + 3] = 255;
+      const qe = [(old[0] - c[0]) * alpha, (old[1] - c[1]) * alpha, (old[2] - c[2]) * alpha];
+      for (const wgt of weights) {
+        const ny = y + wgt[0], nx = x + wgt[1];
+        if (ny >= 0 && ny < height && nx >= 0 && nx < width) {
+          const j = (ny * width + nx) * 3;
+          arr[j] += qe[0] * wgt[2]; arr[j + 1] += qe[1] * wgt[2]; arr[j + 2] += qe[2] * wgt[2];
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// 层内一维误差扩散：同一槽的像素在画面上是分散的，只能按扫描序累积误差
+const SEQ_KERNELS = {
+  FS:     [7 / 16, 3 / 16, 5 / 48],
+  Jarvis: [7 / 48, 5 / 48, 3 / 48],
+  Stucki: [8 / 42, 4 / 42, 2 / 42],
+};
+
+function diffuseSeq(seq, palette, opts, out) {
+  opts = opts || {};
+  const alpha = opts.alpha ?? 1;
+  const gain = (opts.strength ?? 64) / 64;
+  const kern = SEQ_KERNELS[opts.filter] || SEQ_KERNELS.FS;
+  const pend = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (const p of seq) {
+    const o = p * 4;
+    const want = [out[o] + pend[0][0], out[o + 1] + pend[0][1], out[o + 2] + pend[0][2]];
+    const c = palette[nearestRGBIdx(want, palette)];
+    out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; out[o + 3] = 255;
+    const e = [(want[0] - c[0]) * alpha * gain,
+               (want[1] - c[1]) * alpha * gain,
+               (want[2] - c[2]) * alpha * gain];
+    pend[0] = [pend[1][0] + e[0] * kern[0], pend[1][1] + e[1] * kern[0], pend[1][2] + e[2] * kern[0]];
+    pend[1] = [pend[2][0] + e[0] * kern[1], pend[2][1] + e[1] * kern[1], pend[2][2] + e[2] * kern[1]];
+    pend[2] = [e[0] * kern[2], e[1] * kern[2], e[2] * kern[2]];
+  }
+}
+
+// 把一个颜色槽预处理成渲染状态（同槽只算一次权重与矩阵，逐像素零查找）
+function slotState(sv, pal, D, mvOf, width, kind, mixK) {
+  const c = slotRGB(sv, pal);
+  const method = sv.method || 'mix';
+  const st = { kind, c, method, sv, mx: null, mv: null, spanCap: 0, edKey: null };
+  if (method === 'mix') {
+    const k = Math.min(4, Math.max(2, sv.mixColors ?? mixK ?? 4));
+    st.mx = pruneMix(restrictMix(slotMixWeights(c, D, sv), k, pal, sv.mixSpanLimit ?? 60),
+                     sv.minWeight ?? 0);
+    st.mv = mvOf(sv.matrix || 'bayer4', 0);
+    st.spanCap = sv.mixSpan ?? 0;
+  } else if (method === 'ordered') {
+    st.mv = mvOf(sv.matrix || 'bayer4', sv.strength ?? 64);
+  } else if (method === 'ed') {
+    st.edKey = (sv.filter || 'FS') + '|' + (sv.alpha ?? 1);
+  }
+  return st;
+}
+
+// 渲染。opts:
+//   plan         analyzeProjection 的结果（缺省则现场分析）
+//   slots        {层号: [槽,...]}，空 = 该层走自动投影
+//   labels       Int32Array(npix)，值为槽 uid，-1 = 未手绘
+//   labelSlots   {uid: 槽}，手绘标签的解析表
+//   stage        'projection' | 'final'
+//   onlyBand     只渲染某层（其余透明），-1 = 全部
+function projectionDither(img, palette, D, opts) {
+  opts = opts || {};
+  const plan = opts.plan || analyzeProjection(img, D, opts);
+  const { width, height, npix, opaque, bands, bandOf } = plan;
+  const slotsMap = opts.slots || {};
+  const labels = opts.labels || null;
+  const labelSlots = opts.labelSlots || null;
+  const only = (opts.onlyBand === undefined || opts.onlyBand === null) ? -1 : opts.onlyBand;
+  const doFinal = (opts.stage || 'final') !== 'projection';
+  const mixK = Math.min(4, Math.max(2, opts.mixColors ?? 4));
+  // 自动路径的默认阈值矩阵：必须来自面板参数，不能写死 bayer，
+  // 否则「矩阵阶数 2×2」这类设置对成品图完全没有影响。
+  const defaultMatrix = DITHER_MATRICES[opts.matrix] ? opts.matrix : 'bayer4';
+  const src = img.data;
+  const out = new Uint8ClampedArray(npix * 4);
+  // 调色板可能在建 plan 之后变过（用户取消勾选），此时 mixes 里存的下标越界。
+  // 与其抛 TypeError 进 alert，不如落到最近的合法板内色 —— 数据层另有 plan.palSig
+  // 校验会在不匹配时重建 plan，这里是最后一道防线。
+  const safeColor = (i, fb) => palette[i] || palette[nearestRGBIdx(fb || [0, 0, 0], palette)]
+                          || palette[0] || [0, 0, 0];
+  const put = (o, c) => {
+    const cc = c || palette[0] || [0, 0, 0];
+    out[o] = cc[0]; out[o + 1] = cc[1]; out[o + 2] = cc[2]; out[o + 3] = 255;
+  };
+  ensureLabData(D);
+
+  const mvCache = new Map();
+  const mvOf = (matName, strength) => {
+    const key = matName + '|' + (strength ?? 0);
+    let v = mvCache.get(key);
+    if (!v) { v = matrixVals(DITHER_MATRICES[matName] || DITHER_MATRICES.bayer, strength ?? 0); mvCache.set(key, v); }
+    return v;
+  };
+  const thAt = (mv, p) => mv.ths[(((p / width) | 0) % mv.m) * mv.m + (p % width) % mv.m];
+
+  const nearestIdx = (r, g, b, targets) => {
+    let bj = 0, bd = Infinity;
+    for (let j = 0; j < targets.length; j++) {
+      const c = targets[j];
+      const d = (r - c[0]) ** 2 + (g - c[1]) ** 2 + (b - c[2]) ** 2;
+      if (d < bd) { bd = d; bj = j; }
+    }
+    return bj;
+  };
+
+  // 颜色槽只作用于「手绘标签指向它」的像素，不参与任何自动分配。
+  // 这保证了「改一个槽的颜色」只影响画笔画过的那片区域 ——
+  // 曾经有过「按最近的槽自动分配」的版本，改色会让整层一起变。
+  const stateOf = new Map();
+  const stateFor = (sv, kind) => {
+    let st = stateOf.get(sv);
+    if (!st) { st = slotState(sv, D.palette, D, mvOf, width, kind, mixK); stateOf.set(sv, st); }
+    return st;
+  };
+  const autoStateOf = new Map();   // 层号:色位 → 自动投影色的渲染状态
+
+  const pick = new Array(npix);            // 每像素的渲染状态（null = 不渲染）
+  const seqs = new Map();                  // 槽 → 层内 1D 误差扩散像素序列
+  const edOpts = new Map();                // filter|alpha → 槽（2D 贴图共享）
+  let needED = false;
+  const forceBand = opts.forceBand || null;
+  for (let p = 0; p < npix; p++) {
+    if (!opaque[p]) continue;
+    // 强制层覆盖：跨层涂色后，这块像素在显示上要算进被涂的那一层
+    const b = (forceBand && forceBand[p] >= 0) ? forceBand[p] : bandOf[p];
+    if (only >= 0 && only !== b) continue;
+    const o = p * 4, r = src[o], g = src[o + 1], bl = src[o + 2];
+    let st = null;
+    if (labels && labelSlots) {
+      const uid = labels[p];
+      if (uid >= 0) { const sv = labelSlots[uid]; if (sv) st = stateFor(sv, 'slot'); }
+    }
+    // 该层有颜色槽时，像素按「最近的投影色」归到对应槽上。
+    // 归属由投影色决定（建 plan 时就固定了），所以改某个槽的颜色/方法只影响
+    // 它自己那一块，不会像「按最近槽色吸附」那样把整层都带跑。
+    if (!st) {
+      const band0 = bands[b];
+      const ss = slotsMap[b];
+      if (band0 && band0.projRGB.length && ss && ss.length) {
+        let sv = null;
+        if (ss.length === band0.projRGB.length) {
+          sv = ss[nearestIdx(r, g, bl, band0.projRGB)];   // 与导入自动时一一对应
+        } else {
+          let bd0 = Infinity;                            // 用户增删过颜色：按颜色最近
+          for (const cand of ss) {
+            const c0 = slotRGB(cand, palette);
+            if (!c0) continue;
+            const d0 = (r - c0[0]) ** 2 + (g - c0[1]) ** 2 + (bl - c0[2]) ** 2;
+            if (d0 < bd0) { bd0 = d0; sv = cand; }
+          }
+        }
+        if (sv) st = stateFor(sv, 'slot');
+      }
+    }
+    if (!st) {
+      const band = bands[b];
+      if (!band || !band.projRGB.length) continue;
+      // 注意：下标是「该层第几个投影色」bj，不是层号 b。用层号索引 mixes 会在
+      // 层号 >= 每层色数时取到 undefined，把整层像素当空处理（会留下透明洞）。
+      const bj = nearestIdx(r, g, bl, band.projRGB);
+      const key = b + ':' + bj;
+      st = autoStateOf.get(key);
+      if (!st) {
+        // 配方缺失不丢像素：渲染阶段对 mx === null 走最近板内色平涂兜底
+        const rawMix = (band.mixes && band.mixes[bj]) || null;
+        st = { kind: 'auto', c: band.projRGB[bj], method: 'mix', sv: null,
+               mx: rawMix ? restrictMix(rawMix, mixK, palette, 60) : null,
+               mv: mvOf(defaultMatrix, 0), spanCap: 0, edKey: null };
+        autoStateOf.set(key, st);
+      }
+    }
+    pick[p] = st;
+    if (st.method === 'error' && st.sv) {
+      if (!seqs.has(st.sv)) seqs.set(st.sv, []);
+      seqs.get(st.sv).push(p);
+    } else if (st.method === 'ed' && st.sv) {
+      needED = true; edOpts.set(st.edKey, st.sv);
+    }
+  }
+
+  // 2D 误差扩散贴图（只在确有 ed 像素时计算；参数相同的槽共用一张）
+  const edMaps = new Map();
+  if (needED && doFinal) {
+    for (const [key, sv] of edOpts) {
+      edMaps.set(key, diffuseImage2D(img, palette, { filter: sv.filter || 'FS', alpha: sv.alpha ?? 1 }));
+    }
+  }
+
+  for (let p = 0; p < npix; p++) {
+    const st = pick[p];
+    if (!st) continue;
+    const o = p * 4;
+    if (!doFinal) { put(o, st.c); continue; }
+    if (st.method === 'direct') { put(o, palette[nearestRGBIdx(st.c, palette)]); continue; }
+    if (st.method === 'error') {      // 先放原色，最后统一扩散
+      out[o] = src[o]; out[o + 1] = src[o + 1]; out[o + 2] = src[o + 2]; out[o + 3] = 255;
+      continue;
+    }
+    if (st.method === 'ed') {
+      const em = edMaps.get(st.edKey);
+      if (em) { out[o] = em[o]; out[o + 1] = em[o + 1]; out[o + 2] = em[o + 2]; out[o + 3] = 255; }
+      continue;
+    }
+    if (st.method === 'ordered') {
+      const r = src[o], g = src[o + 1], bl = src[o + 2];
+      const off = (thAt(st.mv, p) - 0.5) * (st.sv.strength ?? 64);
+      put(o, palette[nearestRGBIdx([r + off, g + off, bl + off], palette)]);
+      continue;
+    }
+    if (!st.mx) { put(o, palette[nearestRGBIdx(st.c, palette)]); continue; }
+    if (st.spanCap > 0) {
+      let lo = Infinity, hi = -Infinity;
+      for (let k = 0; k < st.mx.idx.length; k++) {
+        const L = D.labL ? D.labL[st.mx.idx[k]] : 0;
+        if (L < lo) lo = L;
+        if (L > hi) hi = L;
+      }
+      const luma = 0.299 * src[o] + 0.587 * src[o + 1] + 0.114 * src[o + 2];
+      if ((hi - lo) > st.spanCap && luma > 76) { put(o, palette[nearestRGBIdx(st.c, palette)]); continue; }
+    }
+    const tt = thAt(st.mv, p);
+    let acc = 0, sel = st.mx.w.length - 1;
+    for (let k = 0; k < st.mx.w.length; k++) { acc += st.mx.w[k]; if (acc >= tt) { sel = k; break; } }
+    put(o, safeColor(st.mx.idx[sel], st.c));
+  }
+
+  // 层内一维误差扩散（同槽像素按扫描序）
+  for (const [sv, seq] of seqs) {
+    if (seq.length) diffuseSeq(seq, palette, sv, out);
+  }
   return { width, height, data: out };
 }
 
