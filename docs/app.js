@@ -952,9 +952,18 @@ function scheduleRepaint() {
   }, 180);
 }
 
+let lastCanvasW = 0, lastCanvasH = 0;
+
 function fitCanvas() {
   const cv = $('dstCanvas'), fit = $('canvasFit'), body = $('stageBody');
   if (!cv || !fit || !body || !cv.width) return;
+  // 画布尺寸变了（换图 / 改压缩 / 换方法）：旧的平移量没有意义了，
+  // 不归零会把图像推到视野外，看起来就像「缩放平移失效」
+  if (cv.width !== lastCanvasW || cv.height !== lastCanvasH) {
+    lastCanvasW = cv.width;
+    lastCanvasH = cv.height;
+    ED.pan = { x: 0, y: 0 };
+  }
   const pad = 24;
   const availW = body.clientWidth - pad * 2;
   const availH = body.clientHeight - pad * 2;
@@ -1111,12 +1120,18 @@ function bindPaint() {
     clearOverlay();
     afterEdit();                 // 松手才真正重渲一次
   });
-  // 滚轮缩放
+  // 双击画布 = 回到「适应」，免得图跑偏了还要去找按钮
+  cv.addEventListener('dblclick', () => {
+    ED.zoom = 0;
+    ED.pan = { x: 0, y: 0 };
+    fitCanvas();
+  });
+
+  // 滚轮缩放：任何视图、任何方法都能用（以前只限编辑器内，成品模式调不了）
   cv.addEventListener('wheel', ev => {
-    if (!ED.editing) return;
     ev.preventDefault();
-    const cur = ED.zoom > 0 ? ED.zoom : 100;
-    ED.zoom = Math.max(25, Math.min(800, Math.round(cur * (ev.deltaY < 0 ? 1.15 : 1 / 1.15))));
+    const cur = ED.zoom > 0 ? ED.zoom : Math.round((ED.scale || 1) * 100);
+    ED.zoom = Math.max(25, Math.min(1200, Math.round(cur * (ev.deltaY < 0 ? 1.15 : 1 / 1.15))));
     fitCanvas();
   }, { passive: false });
 }
@@ -1589,6 +1604,8 @@ onEl('projMatrix', 'change', onParamChange);
 onEl('method', 'change', () => {
   updateMethodParams();
   if (ED.editing) { exitEditorMode(); }
+  ED.zoom = 0;
+  ED.pan = { x: 0, y: 0 };
   scheduleProcess();
 });
 
@@ -1618,6 +1635,9 @@ function loadFile(file) {
     cv.getContext('2d').drawImage(img, 0, 0, w, h);
     srcData = cv.getContext('2d').getImageData(0, 0, w, h);
     cv.classList.remove('hidden');
+    ED.zoom = 0;
+    ED.pan = { x: 0, y: 0 };
+    lastCanvasW = 0;
     if ($('imgMeta')) $('imgMeta').textContent = file.name + ' · ' + w + '×' + h + ' px';
     URL.revokeObjectURL(url);
     if (ED.editing) { invalidatePlan(); analyzeNow(true); refreshAll(); }
@@ -1695,6 +1715,7 @@ onEl('viewTabs', 'click', e => {
   if (!b || b.disabled) return;
   ED.view = b.dataset.view;
   ED.zoom = 0;
+  ED.pan = { x: 0, y: 0 };     // 切视图回到「适配」，免得停在上一次的缩放平移里
   updateViewButtons();
   paintCanvas();
 });
@@ -1826,6 +1847,7 @@ onEl('slotDialogDel', 'click', () => {
 onEl('layerOnly', 'change', e => {
   ED.layerOnly = e.target.checked;
   ED.zoom = 0;
+  ED.pan = { x: 0, y: 0 };
   paintCanvas();
 });
 
