@@ -936,6 +936,96 @@ function pruneMix(m, minWeight) {
   return m;
 }
 
+// ============================================================
+// 2 色取色：枚举色对 × 图案能实现的档位（与桌面版 layered_dither 同一套判据）
+// ============================================================
+// 图案有 N 个阈值 → 2 色混合只能实现 step/N 这些比例（2×2=4 档、4×4=16 档）。
+// 桌面版实测：按档位选色对比"连续最优再被阈值截断"低 6.7%（2×2）~14%（4×4）。
+// 网页版原来是从四面体 4 色权重里截掉最小两权（restrictMix），那是另一种算法，
+// 2 色下色差明显更高（实测 DE8 3.80 vs 1.81），这里改成同一套。
+const PAIR_GRID_CACHE = new Map();
+
+function pairGrid(D, levels) {
+  const hit = PAIR_GRID_CACHE.get(levels);
+  if (hit) return hit;
+  const pal = D.palette;
+  const n = pal.length;
+  const lab = pal.map(rgbToLab);
+  const pairs = [];
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) pairs.push([i, j]);
+  const steps = levels + 1;
+  const ts = [];
+  for (let s = 0; s < steps; s++) ts.push(s / levels);
+  const Q = new Float64Array(pairs.length * steps * 3);
+  for (let p = 0; p < pairs.length; p++) {
+    const A = lab[pairs[p][0]], Bc = lab[pairs[p][1]];
+    for (let s = 0; s < steps; s++) {
+      const t = ts[s], o = (p * steps + s) * 3;
+      Q[o] = A[0] + (Bc[0] - A[0]) * t;
+      Q[o + 1] = A[1] + (Bc[1] - A[1]) * t;
+      Q[o + 2] = A[2] + (Bc[2] - A[2]) * t;
+    }
+  }
+  const g = { pairs, steps, ts, Q, lab };
+  if (PAIR_GRID_CACHE.size > 4) PAIR_GRID_CACHE.clear();
+  PAIR_GRID_CACHE.set(levels, g);
+  return g;
+}
+
+// 返回 { idx:[a,b], w:[wa,wb] }；权重一定落在 step/levels 上
+function pairMix2(target, D, levels, penalty) {
+  const g = pairGrid(D, levels);
+  const p = rgbToLab(target);
+  const { pairs, steps, ts, Q, lab } = g;
+  let bestI = 0, bestS = 0, bestCost = Infinity;
+  for (let i = 0; i < pairs.length; i++) {
+    let bd = Infinity, bs = 0;
+    const base = i * steps * 3;
+    for (let s = 0; s < steps; s++) {
+      const o = base + s * 3;
+      const d = (Q[o] - p[0]) ** 2 + (Q[o + 1] - p[1]) ** 2 + (Q[o + 2] - p[2]) ** 2;
+      if (d < bd) { bd = d; bs = s; }
+    }
+    let cost = Math.sqrt(bd);
+    if (penalty > 0) {
+      const A = lab[pairs[i][0]], B = lab[pairs[i][1]];
+      cost += penalty * (Math.hypot(A[0] - p[0], A[1] - p[1], A[2] - p[2])
+                       + Math.hypot(B[0] - p[0], B[1] - p[1], B[2] - p[2]));
+    }
+    if (cost < bestCost) { bestCost = cost; bestI = i; bestS = bs; }
+  }
+  const t = ts[bestS];
+  return { idx: [pairs[bestI][0], pairs[bestI][1]], w: [1 - t, t] };
+}
+
+// 边缘遮罩：Lab 三通道梯度的最大值超过阈值即为轮廓像素。
+// 只看亮度会漏掉「等亮度换色」的轮廓（粉→灰这种），也会把平滑渐变误判成边。
+function edgeMaskOf(img, thresh) {
+  if (!(thresh > 0)) return null;
+  const { width, height, data } = img;
+  const np = width * height;
+  const ch = [new Float32Array(np), new Float32Array(np), new Float32Array(np)];
+  for (let i = 0; i < np; i++) {
+    const lab = rgbToLab([data[i * 4], data[i * 4 + 1], data[i * 4 + 2]]);
+    ch[0][i] = lab[0]; ch[1][i] = lab[1]; ch[2][i] = lab[2];
+  }
+  const mask = new Uint8Array(np);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      let m = 0;
+      for (let c = 0; c < 3; c++) {
+        const a = ch[c], xm = x > 0 ? a[i - 1] : a[i], xp = x < width - 1 ? a[i + 1] : a[i];
+        const ym = y > 0 ? a[i - width] : a[i], yp = y < height - 1 ? a[i + width] : a[i];
+        const g = Math.hypot((xp - xm) / 2, (yp - ym) / 2);
+        if (g > m) m = g;
+      }
+      if (m > thresh) mask[i] = 1;
+    }
+  }
+  return mask;
+}
+
 // 整图二维误差扩散。结果只作为「ed 方法」像素的贴图来源：
 // 扩散本身在整图上正常进行（误差不会在像素间丢失），其它方法各自的像素不受影响。
 function diffuseImage2D(img, palette, opts) {
@@ -998,18 +1088,27 @@ function diffuseSeq(seq, palette, opts, out) {
 }
 
 // 把一个颜色槽预处理成渲染状态（同槽只算一次权重与矩阵，逐像素零查找）
-function slotState(sv, pal, D, mvOf, width, kind, mixK) {
+function slotState(sv, pal, D, mvOf, width, kind, mixK, defaultMatrix) {
   const c = slotRGB(sv, pal);
   const method = sv.method || 'mix';
   const st = { kind, c, method, sv, mx: null, mv: null, spanCap: 0, edKey: null };
+  // 槽的矩阵默认「跟随全局面板」（matrixAuto），否则导入槽时写死的 bayer4 会把
+  // 「阈值矩阵 2×2 / 4×4」这个面板参数彻底盖掉 —— 表现就是怎么切都没区别。
+  const matName = (sv.matrixAuto === false)
+    ? (sv.matrix || 'bayer4')
+    : (DITHER_MATRICES[defaultMatrix] ? defaultMatrix : 'bayer4');
   if (method === 'mix') {
     const k = Math.min(4, Math.max(2, sv.mixColors ?? mixK ?? 4));
-    st.mx = pruneMix(restrictMix(slotMixWeights(c, D, sv), k, pal, sv.mixSpanLimit ?? 60),
-                     sv.minWeight ?? 0);
-    st.mv = mvOf(sv.matrix || 'bayer4', 0);
+    st.mv = mvOf(matName, 0);
+    if (k === 2) {
+      st.mx = pairMix2(c, D, st.mv.m * st.mv.m, 0.10);
+    } else {
+      st.mx = pruneMix(restrictMix(slotMixWeights(c, D, sv), k, pal, sv.mixSpanLimit ?? 60),
+                       sv.minWeight ?? 0);
+    }
     st.spanCap = sv.mixSpan ?? 0;
   } else if (method === 'ordered') {
-    st.mv = mvOf(sv.matrix || 'bayer4', sv.strength ?? 64);
+    st.mv = mvOf(matName, sv.strength ?? 64);
   } else if (method === 'ed') {
     st.edKey = (sv.filter || 'FS') + '|' + (sv.alpha ?? 1);
   }
@@ -1033,6 +1132,7 @@ function projectionDither(img, palette, D, opts) {
   const only = (opts.onlyBand === undefined || opts.onlyBand === null) ? -1 : opts.onlyBand;
   const doFinal = (opts.stage || 'final') !== 'projection';
   const mixK = Math.min(4, Math.max(2, opts.mixColors ?? 4));
+  const edgeMask = edgeMaskOf(img, opts.edgeFlat ?? 0);
   // 自动路径的默认阈值矩阵：必须来自面板参数，不能写死 bayer，
   // 否则「矩阵阶数 2×2」这类设置对成品图完全没有影响。
   const defaultMatrix = DITHER_MATRICES[opts.matrix] ? opts.matrix : 'bayer4';
@@ -1074,7 +1174,7 @@ function projectionDither(img, palette, D, opts) {
   const stateOf = new Map();
   const stateFor = (sv, kind) => {
     let st = stateOf.get(sv);
-    if (!st) { st = slotState(sv, D.palette, D, mvOf, width, kind, mixK); stateOf.set(sv, st); }
+    if (!st) { st = slotState(sv, D.palette, D, mvOf, width, kind, mixK, defaultMatrix); stateOf.set(sv, st); }
     return st;
   };
   const autoStateOf = new Map();   // 层号:色位 → 自动投影色的渲染状态
@@ -1127,10 +1227,18 @@ function projectionDither(img, palette, D, opts) {
       st = autoStateOf.get(key);
       if (!st) {
         // 配方缺失不丢像素：渲染阶段对 mx === null 走最近板内色平涂兜底
-        const rawMix = (band.mixes && band.mixes[bj]) || null;
+        const mv0 = mvOf(defaultMatrix, 0);
+        const lv0 = mv0.m * mv0.m;
+        let mx0 = null;
+        if (mixK === 2) {
+          // 2 色：直接按图案档位枚举色对，不再从四面体权重里截断
+          mx0 = pairMix2(band.projRGB[bj], D, lv0, opts.mix2Penalty ?? 0.10);
+        } else {
+          const rawMix = (band.mixes && band.mixes[bj]) || null;
+          mx0 = rawMix ? restrictMix(rawMix, mixK, palette, 60) : null;
+        }
         st = { kind: 'auto', c: band.projRGB[bj], method: 'mix', sv: null,
-               mx: rawMix ? restrictMix(rawMix, mixK, palette, 60) : null,
-               mv: mvOf(defaultMatrix, 0), spanCap: 0, edKey: null };
+               mx: mx0, mv: mv0, spanCap: 0, edKey: null };
         autoStateOf.set(key, st);
       }
     }
@@ -1173,6 +1281,14 @@ function projectionDither(img, palette, D, opts) {
       continue;
     }
     if (!st.mx) { put(o, palette[nearestRGBIdx(st.c, palette)]); continue; }
+    // 边缘纯色化：轮廓像素不混色，用本区域权重最大的色平涂 —— 棋盘不会再把
+    // 1~2px 的轮廓线打成散点。用主导色而不是最近板内色，避免跳色。
+    if (edgeMask && edgeMask[p] && st.mx.w.length) {
+      let bi = 0;
+      for (let k = 1; k < st.mx.w.length; k++) if (st.mx.w[k] > st.mx.w[bi]) bi = k;
+      put(o, safeColor(st.mx.idx[bi], st.c));
+      continue;
+    }
     if (st.spanCap > 0) {
       let lo = Infinity, hi = -Infinity;
       for (let k = 0; k < st.mx.idx.length; k++) {

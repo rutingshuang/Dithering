@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=7a292e41">
+  <link rel="stylesheet" href="style.css?v=1c3bb47e">
 </head>
 <body>
   <header>
@@ -144,6 +144,15 @@
               <select id="projMatrixSize"><option value="4" selected>4×4</option><option value="2">2×2</option></select>
               <select id="projMatrix"></select>
             </div>
+          </div>
+          <div class="field">
+            <label>边缘纯色</label>
+            <select id="projEdgeFlat">
+              <option value="0" selected>关</option>
+              <option value="8">强</option>
+              <option value="12">中</option>
+              <option value="18">弱</option>
+            </select>
           </div>
         </div>
       </section>
@@ -432,10 +441,10 @@
   <div class="hint">拖动面板上的细线调整分界；两端固定。背景直方图标出像素落在哪。</div>
 </div>
 
-  <script src="delaunay.js?v=7a292e41"></script>
-  <script src="dither.js?v=7a292e41"></script>
-  <script src="textpixel.js?v=7a292e41"></script>
-  <script src="app.js?v=7a292e41"></script>
+  <script src="delaunay.js?v=1c3bb47e"></script>
+  <script src="dither.js?v=1c3bb47e"></script>
+  <script src="textpixel.js?v=1c3bb47e"></script>
+  <script src="app.js?v=1c3bb47e"></script>
 
 </body>
 </html>

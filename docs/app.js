@@ -75,6 +75,7 @@ function gatherOpts() {
       edgeMode: $('projEdge').value,
       clusterSpace: $('projSpace').value,
       matrix: $('projMatrix').value || 'bayer4',
+      edgeFlat: +($('projEdgeFlat') || {}).value || 0,
       black: Math.min(black, white - 0.02),
       white: Math.max(white, black + 0.02),
       gamma,
@@ -185,7 +186,7 @@ function slotColor(sv) {
 function slotDefaults(color, uid) {
   return { uid: uid ?? ED.uidSeq++,
            color: (color === undefined || color === null) ? 0 : color,
-           method: 'mix', matrix: 'bayer4', strength: 64,
+           method: 'mix', matrix: 'bayer4', matrixAuto: true, strength: 64,
            filter: 'FS', alpha: 1, projLab: false, refine: 2,
            mixSpan: 0, gamut: true, minWeight: 0, used: false };
 }
@@ -303,17 +304,21 @@ function openSlotDialog(i, j) {
   const sv = ED.slots[i][j];
   const m = sv.method || 'mix';
   const isMix = m === 'mix', isOrdered = m === 'ordered', isDiff = (m === 'error' || m === 'ed');
+  // 卡片里显示的是「实际生效」的矩阵：跟随全局时就是面板上选的那个
+  const effMat = (sv.matrixAuto === false)
+    ? (sv.matrix || 'bayer4')
+    : (($('projMatrix') && $('projMatrix').value) || 'bayer4');
   const matOpts = MATRIX_KEYS
-    .map(k => `<option value="${k}"${k === (sv.matrix || 'bayer4') ? ' selected' : ''}>${k}</option>`).join('');
+    .map(k => `<option value="${k}"${k === effMat ? ' selected' : ''}>${k}</option>`).join('');
   const core = (isMix || isOrdered)
     ? `<label>矩阵阶数
         <select data-act="matrixSize" data-i="${i}" data-j="${j}">
-          <option value="4"${((sv.matrix || 'bayer4').endsWith('4') ? ' selected' : '')}>4×4</option>
-          <option value="2"${((sv.matrix || 'bayer4').endsWith('2') ? ' selected' : '')}>2×2（粗颗粒）</option>
+          <option value="4"${(effMat.endsWith('4') ? ' selected' : '')}>4×4</option>
+          <option value="2"${(effMat.endsWith('2') ? ' selected' : '')}>2×2</option>
         </select></label>
       <label>图案
         <select data-act="matrixName" data-i="${i}" data-j="${j}">
-          ${MATRIX_NAMES.map(x => x[0]).map(k => `<option value="${k}"${(sv.matrix || 'bayer4').startsWith(k) ? ' selected' : ''}>${k}</option>`).join('')}
+          ${MATRIX_NAMES.map(x => x[0]).map(k => `<option value="${k}"${effMat.startsWith(k) ? ' selected' : ''}>${k}</option>`).join('')}
         </select></label>`
     : '';
   const strength = isOrdered
@@ -384,9 +389,14 @@ function applySlotParam(t, sv) {
     const h = t.value.replace('#', '');
     sv.color = [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
   } else if (act === 'method') sv.method = t.value;
-  else if (act === 'matrix') sv.matrix = t.value;
-  else if (act === 'matrixSize') sv.matrix = (sv.matrix || 'bayer4').replace(/[24]$/, '') + t.value;
-  else if (act === 'matrixName') sv.matrix = t.value + ((sv.matrix || 'bayer4').slice(-1) === '2' ? '2' : '4');
+  else if (act === 'matrix') { sv.matrix = t.value; sv.matrixAuto = false; }
+  else if (act === 'matrixSize') {
+    sv.matrix = (sv.matrix || 'bayer4').replace(/[24]$/, '') + t.value;
+    sv.matrixAuto = false;
+  } else if (act === 'matrixName') {
+    sv.matrix = t.value + ((sv.matrix || 'bayer4').slice(-1) === '2' ? '2' : '4');
+    sv.matrixAuto = false;
+  }
   else if (act === 'mixColors') sv.mixColors = +t.value;
   else if (act === 'filter') sv.filter = t.value;
   else if (act === 'projLab') sv.projLab = t.checked;
@@ -481,7 +491,7 @@ function buildPlan(opts, keepEdges) {
     // 重建之前把用户改过的抖动方式与参数记下来，重建后按「同层同序号」还原 ——
     // 否则一次意外的 plan 重建就会把调好的方法/参数全部打回默认。
     const keep = {};
-    const KEYS = ['method', 'matrix', 'strength', 'filter', 'alpha',
+    const KEYS = ['method', 'matrix', 'matrixAuto', 'strength', 'filter', 'alpha',
                   'projLab', 'refine', 'mixSpan', 'gamut', 'minWeight', 'mixColors', 'used'];
     for (const k in ED.slots) {
       keep[k] = ED.slots[k].map(sv => {
@@ -693,6 +703,7 @@ function refreshLockState() {
   if ($('projSpace')) $('projSpace').disabled = locked;
   if ($('projMatrix')) $('projMatrix').disabled = locked;
   if ($('projMatrixSize')) $('projMatrixSize').disabled = locked;
+  if ($('projEdgeFlat')) $('projEdgeFlat').disabled = locked;
   if ($('lockBadge')) {
     $('lockBadge').textContent = locked ? '已锁定 · ' + n + ' px 手绘' : '未锁定';
     $('lockBadge').style.color = locked ? 'var(--warn)' : '';
@@ -1600,6 +1611,7 @@ function paramDebounced() {
 });
 onEl('projMatrixSize', 'change', () => { fillMatrixSelect($('projMatrix'), $('projMatrixSize').value); onParamChange(); });
 onEl('projMatrix', 'change', onParamChange);
+onEl('projEdgeFlat', 'change', onParamChange);
 
 onEl('method', 'change', () => {
   updateMethodParams();
