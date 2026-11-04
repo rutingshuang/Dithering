@@ -1009,7 +1009,8 @@ function pairMix2(target, D, levels, penalty) {
 const LINE_CACHE = new Map();
 
 function lineRespMap(orig, tw, th) {
-  const key = [orig.width, orig.height, tw, th].join('|');
+  // key 必须区分「不同的图」：只按尺寸会让换图后复用上一张的线稿
+  const key = [(orig.__rev || 0), orig.width, orig.height, tw, th].join('|');
   const hit = LINE_CACHE.get(key);
   if (hit) return hit;
   const ow = orig.width, oh = orig.height, data = orig.data;

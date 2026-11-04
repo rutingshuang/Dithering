@@ -461,9 +461,10 @@ function updateUndoButtons() {
 // ---------- plan 构建 ----------
 // 线稿 mask 只跟原图 + 目标尺寸 + 阈值有关，缓存起来，改配色参数时不用重算
 let _lineMaskState = { key: null, lm: null };
+let imgRev = 0;              // 每次载入新图自增，参与所有按图缓存的 key
 function lineMaskCache(tw, th) {
   if (!srcData) return null;
-  const key = [srcData.width, srcData.height, tw, th].join('|');
+  const key = [srcData.__rev || 0, tw, th].join('|');
   if (_lineMaskState.key !== key) {
     _lineMaskState = { key, lm: lineRespMap(srcData, tw, th) };
   }
@@ -1672,6 +1673,8 @@ function loadFile(file) {
     cv.width = w; cv.height = h;
     cv.getContext('2d').drawImage(img, 0, 0, w, h);
     srcData = cv.getContext('2d').getImageData(0, 0, w, h);
+    // 线稿缓存按「图 + 尺寸」做 key：只按尺寸会在换图后命中上一张的线稿
+    srcData.__rev = ++imgRev;
     cv.classList.remove('hidden');
     ED.zoom = 0;
     ED.pan = { x: 0, y: 0 };
