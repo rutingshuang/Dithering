@@ -998,32 +998,75 @@ function pairMix2(target, D, levels, penalty) {
   return { idx: [pairs[bestI][0], pairs[bestI][1]], w: [1 - t, t] };
 }
 
-// 边缘遮罩：Lab 三通道梯度的最大值超过阈值即为轮廓像素。
-// 只看亮度会漏掉「等亮度换色」的轮廓（粉→灰这种），也会把平滑渐变误判成边。
-function edgeMaskOf(img, thresh) {
-  if (!(thresh > 0)) return null;
-  const { width, height, data } = img;
-  const np = width * height;
-  const ch = [new Float32Array(np), new Float32Array(np), new Float32Array(np)];
-  for (let i = 0; i < np; i++) {
-    const lab = rgbToLab([data[i * 4], data[i * 4 + 1], data[i * 4 + 2]]);
-    ch[0][i] = lab[0]; ch[1][i] = lab[1]; ch[2][i] = lab[2];
+// ============================================================
+// 线稿保护：在高分辨率原图上找「细线」，不是找「深色」
+// ============================================================
+// 只用「够暗」当判据会把成片的暗部（头发、翅膀）也当成线，结果整块被涂死。
+// 真正的线是**局部暗谷**：比周围一圈都暗，且暗不少。用
+//     resp = max(邻域 L) - L
+// 描述这件事：1px 的线 resp 上百，大片暗部内部 resp 只有个位数。
+// 必须在原图上算再下采样：20% 的图里细线已经被平均成浅灰，暗谷没了。
+const LINE_CACHE = new Map();
+
+function lineRespMap(orig, tw, th) {
+  const key = [orig.width, orig.height, tw, th].join('|');
+  const hit = LINE_CACHE.get(key);
+  if (hit) return hit;
+  const ow = orig.width, oh = orig.height, data = orig.data;
+  const np0 = ow * oh;
+  const L = new Float32Array(np0);
+  for (let i = 0; i < np0; i++) {
+    const o = i * 4;
+    L[i] = (data[o + 3] === 0) ? 255 : rgbToLab([data[o], data[o + 1], data[o + 2]])[0];
   }
-  const mask = new Uint8Array(np);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = y * width + x;
+  // 分离式 max 滤波（半径 3，够盖住 2~3px 的线）
+  const R = 3;
+  const tmp = new Float32Array(np0), M = new Float32Array(np0);
+  for (let y = 0; y < oh; y++) {
+    const row = y * ow;
+    for (let x = 0; x < ow; x++) {
       let m = 0;
-      for (let c = 0; c < 3; c++) {
-        const a = ch[c], xm = x > 0 ? a[i - 1] : a[i], xp = x < width - 1 ? a[i + 1] : a[i];
-        const ym = y > 0 ? a[i - width] : a[i], yp = y < height - 1 ? a[i + width] : a[i];
-        const g = Math.hypot((xp - xm) / 2, (yp - ym) / 2);
-        if (g > m) m = g;
-      }
-      if (m > thresh) mask[i] = 1;
+      const a = Math.max(0, x - R), b = Math.min(ow - 1, x + R);
+      for (let k = a; k <= b; k++) if (L[row + k] > m) m = L[row + k];
+      tmp[row + x] = m;
     }
   }
-  return mask;
+  for (let x = 0; x < ow; x++) {
+    for (let y = 0; y < oh; y++) {
+      let m = 0;
+      const a = Math.max(0, y - R), b = Math.min(oh - 1, y + R);
+      for (let k = a; k <= b; k++) { const v = tmp[k * ow + x]; if (v > m) m = v; }
+      M[y * ow + x] = m;
+    }
+  }
+  // 每格取「最强响应」的样本（线色也一并带回来）
+  const n = tw * th;
+  const resp = new Float32Array(n);
+  const rgb = new Float32Array(n * 3);
+  const minL = new Float32Array(n).fill(999);
+  const minRGB = new Float32Array(n * 3);
+  const fx = ow / tw, fy = oh / th;
+  for (let y = 0; y < oh; y++) {
+    const ty = Math.min(th - 1, (y / fy) | 0);
+    for (let x = 0; x < ow; x++) {
+      const i = y * ow + x, o = i * 4;
+      if (data[o + 3] === 0) continue;
+      const t = ty * tw + Math.min(tw - 1, (x / fx) | 0);
+      const r = M[i] - L[i];
+      if (r > resp[t]) {
+        resp[t] = r;
+        rgb[t * 3] = data[o]; rgb[t * 3 + 1] = data[o + 1]; rgb[t * 3 + 2] = data[o + 2];
+      }
+      if (L[i] < minL[t]) {
+        minL[t] = L[i];
+        minRGB[t * 3] = data[o]; minRGB[t * 3 + 1] = data[o + 1]; minRGB[t * 3 + 2] = data[o + 2];
+      }
+    }
+  }
+  const out = { resp, rgb, minL, minRGB, tw, th };
+  if (LINE_CACHE.size > 3) LINE_CACHE.clear();
+  LINE_CACHE.set(key, out);
+  return out;
 }
 
 // 整图二维误差扩散。结果只作为「ed 方法」像素的贴图来源：
@@ -1132,7 +1175,6 @@ function projectionDither(img, palette, D, opts) {
   const only = (opts.onlyBand === undefined || opts.onlyBand === null) ? -1 : opts.onlyBand;
   const doFinal = (opts.stage || 'final') !== 'projection';
   const mixK = Math.min(4, Math.max(2, opts.mixColors ?? 4));
-  const edgeMask = edgeMaskOf(img, opts.edgeFlat ?? 0);
   // 自动路径的默认阈值矩阵：必须来自面板参数，不能写死 bayer，
   // 否则「矩阵阶数 2×2」这类设置对成品图完全没有影响。
   const defaultMatrix = DITHER_MATRICES[opts.matrix] ? opts.matrix : 'bayer4';
@@ -1281,14 +1323,6 @@ function projectionDither(img, palette, D, opts) {
       continue;
     }
     if (!st.mx) { put(o, palette[nearestRGBIdx(st.c, palette)]); continue; }
-    // 边缘纯色化：轮廓像素不混色，用本区域权重最大的色平涂 —— 棋盘不会再把
-    // 1~2px 的轮廓线打成散点。用主导色而不是最近板内色，避免跳色。
-    if (edgeMask && edgeMask[p] && st.mx.w.length) {
-      let bi = 0;
-      for (let k = 1; k < st.mx.w.length; k++) if (st.mx.w[k] > st.mx.w[bi]) bi = k;
-      put(o, safeColor(st.mx.idx[bi], st.c));
-      continue;
-    }
     if (st.spanCap > 0) {
       let lo = Infinity, hi = -Infinity;
       for (let k = 0; k < st.mx.idx.length; k++) {
@@ -1308,6 +1342,43 @@ function projectionDither(img, palette, D, opts) {
   // 层内一维误差扩散（同槽像素按扫描序）
   for (const [sv, seq] of seqs) {
     if (seq.length) diffuseSeq(seq, palette, sv, out);
+  }
+
+  // 线稿保护：轮廓是 1~2px 的暗线，2 色抖动会把它们打成散点。只对「局部暗谷」
+  // 足够强的格子动手，成片暗部（resp 很小）不受影响 —— 否则整块暗部会被涂死。
+  // 只作用在成品阶段：投影阶段要能看到真实的投影色，不能提前被线覆盖。
+  if (doFinal && opts.lineMask && (opts.lineKeep ?? 0) > 0) {
+    const lm = opts.lineMask;
+    const dark = opts.lineMode === 'dark';       // 整片暗部（风格化），不是细线
+    const thr = opts.lineThresh ?? 35;
+    const mix = Math.max(0, Math.min(1, opts.lineMix ?? 0));   // 0=纯线色 1=完全不留
+    const hit = (p) => dark ? (lm.minL[p] < thr) : (lm.resp[p] >= thr);
+    const colOf = (p) => dark
+      ? [lm.minRGB[p * 3], lm.minRGB[p * 3 + 1], lm.minRGB[p * 3 + 2]]
+      : [lm.rgb[p * 3], lm.rgb[p * 3 + 1], lm.rgb[p * 3 + 2]];
+    const darkL = opts.lineDarkL ?? 50;
+    const cand = [];
+    for (let i = 0; i < palette.length; i++) if (D.labL[i] < darkL) cand.push(i);
+    const use = cand.length ? cand : palette.map((_, i) => i);
+    for (let p = 0; p < npix; p++) {
+      if (!hit(p)) continue;
+      const o = p * 4;
+      if (out[o + 3] === 0) continue;
+      // 线色向该格原本的画面色靠拢：mix 越大线越淡，视觉上越"细"
+      const base = colOf(p);
+      const t0 = base[0], t1 = base[1], t2 = base[2];
+      const tgt = rgbToLab([t0 * (1 - mix) + src[o] * mix,
+                            t1 * (1 - mix) + src[o + 1] * mix,
+                            t2 * (1 - mix) + src[o + 2] * mix]);
+      let bi = use[0], bd = Infinity;
+      for (const ci of use) {
+        const P = D.labPoints[ci];
+        const d = (P[0] - tgt[0]) ** 2 + (P[1] - tgt[1]) ** 2 + (P[2] - tgt[2]) ** 2;
+        if (d < bd) { bd = d; bi = ci; }
+      }
+      const c = palette[bi] || [0, 0, 0];
+      out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2];
+    }
   }
   return { width, height, data: out };
 }

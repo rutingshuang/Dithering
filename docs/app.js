@@ -75,7 +75,10 @@ function gatherOpts() {
       edgeMode: $('projEdge').value,
       clusterSpace: $('projSpace').value,
       matrix: $('projMatrix').value || 'bayer4',
-      edgeFlat: +($('projEdgeFlat') || {}).value || 0,
+      ...(() => {
+        const L = LINE_LEVELS[+($('projLineKeep') || {}).value || 0] || LINE_LEVELS[0];
+        return { lineKeep: L.keep, lineMode: L.mode, lineThresh: L.thresh, lineMix: L.mix };
+      })(),
       black: Math.min(black, white - 0.02),
       white: Math.max(white, black + 0.02),
       gamma,
@@ -456,6 +459,27 @@ function updateUndoButtons() {
 }
 
 // ---------- plan 构建 ----------
+// 线稿 mask 只跟原图 + 目标尺寸 + 阈值有关，缓存起来，改配色参数时不用重算
+let _lineMaskState = { key: null, lm: null };
+function lineMaskCache(tw, th) {
+  if (!srcData) return null;
+  const key = [srcData.width, srcData.height, tw, th].join('|');
+  if (_lineMaskState.key !== key) {
+    _lineMaskState = { key, lm: lineRespMap(srcData, tw, th) };
+  }
+  return _lineMaskState.lm;
+}
+
+// 线稿保护档位。line 模式按「局部暗谷」判据抓细线：阈值越低收得越多，
+// mix 越大线色越淡（视觉上更细）。dark 模式是老行为：整片暗部一起纯色化。
+const LINE_LEVELS = {
+  0: { keep: 0, mode: 'line', thresh: 999, mix: 0 },
+  1: { keep: 1, mode: 'line', thresh: 55, mix: 0.60 },
+  2: { keep: 1, mode: 'line', thresh: 45, mix: 0.35 },
+  3: { keep: 1, mode: 'line', thresh: 35, mix: 0.15 },
+  4: { keep: 1, mode: 'dark', thresh: 60, mix: 0.00 },
+};
+
 function buildPlan(opts, keepEdges) {
   ensureBaryData();
   const [tw, th] = computeTarget(srcData.width, srcData.height);
@@ -624,6 +648,7 @@ function renderStage(stage, onlyBand) {
                      labelSlots: ED.labelSlots, stage,
                      forceBand: ED.forceBand,
                      onlyBand: (onlyBand === undefined ? -1 : onlyBand),
+                     lineMask: lineMaskCache(ED.src.width, ED.src.height),
                    }));
 }
 
@@ -703,7 +728,7 @@ function refreshLockState() {
   if ($('projSpace')) $('projSpace').disabled = locked;
   if ($('projMatrix')) $('projMatrix').disabled = locked;
   if ($('projMatrixSize')) $('projMatrixSize').disabled = locked;
-  if ($('projEdgeFlat')) $('projEdgeFlat').disabled = locked;
+  if ($('projLineKeep')) $('projLineKeep').disabled = locked;
   if ($('lockBadge')) {
     $('lockBadge').textContent = locked ? '已锁定 · ' + n + ' px 手绘' : '未锁定';
     $('lockBadge').style.color = locked ? 'var(--warn)' : '';
@@ -1611,7 +1636,8 @@ function paramDebounced() {
 });
 onEl('projMatrixSize', 'change', () => { fillMatrixSelect($('projMatrix'), $('projMatrixSize').value); onParamChange(); });
 onEl('projMatrix', 'change', onParamChange);
-onEl('projEdgeFlat', 'change', onParamChange);
+// 线稿保护只作用在渲染末尾（不改 plan、不改手绘归属），重画即可
+onEl('projLineKeep', 'change', () => { bumpRev(); paintCanvas(); });
 
 onEl('method', 'change', () => {
   updateMethodParams();
