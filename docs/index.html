@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=08f8b14e">
+  <link rel="stylesheet" href="style.css?v=8e8b6418">
 </head>
 <body>
   <header>
@@ -13,9 +13,14 @@
     <p class="sub">基于 63 色 weplace 调色板，把图片转成像素画风格（分层投影混色 / 重心混合 / 有序抖动 / 误差扩散）</p>
   </header>
 
+  <select id="langSel" class="lang-sel" title="Language">
+    <option value="zh">中文</option>
+    <option value="en">English</option>
+  </select>
+
   <nav class="tabs">
-    <button class="tab active" data-tab="image">图像抖动</button>
-    <button class="tab" data-tab="text">汉字像素图</button>
+    <button class="tab active" data-tab="image" data-i18n="图像抖动">图像抖动</button>
+    <button class="tab" data-tab="text" data-i18n="汉字像素图">汉字像素图</button>
   </nav>
 
   <!-- ===================== 图像抖动：左参数栏 / 中央工作区 / 右编辑栏 ===================== -->
@@ -24,7 +29,7 @@
     <!-- ---------------- 左栏：图像 / 尺寸 / 方法参数 / 调色板 ---------------- -->
     <aside class="rail rail-left">
       <section class="card">
-        <div class="card-head"><h3>图像</h3></div>
+        <div class="card-head"><h3 data-i18n="图像">图像</h3></div>
         <div id="dropZone" class="drop">拖拽图片到这里，或点击选择</div>
         <input type="file" id="fileInput" accept="image/*" style="display:none">
         <div class="meta" id="imgMeta">未选择</div>
@@ -32,7 +37,7 @@
       </section>
 
       <section class="card">
-        <div class="card-head"><h3>输出尺寸</h3></div>
+        <div class="card-head"><h3 data-i18n="输出尺寸">输出尺寸</h3></div>
         <div class="row">
           <input type="range" id="compression" min="1" max="100" value="100" style="flex:1">
           <input type="number" id="compNum" min="1" max="100" value="100" class="num">
@@ -45,12 +50,12 @@
       </section>
 
       <section class="card">
-        <div class="card-head"><h3>抖动方法</h3></div>
+        <div class="card-head"><h3 data-i18n="抖动方法">抖动方法</h3></div>
         <select id="method">
-          <option value="projection" selected>分层投影混色</option>
-          <option value="barycentric">重心混合</option>
-          <option value="ordered">有序抖动</option>
-          <option value="error_diffusion">误差扩散</option>
+          <option value="projection" selected data-i18n="分层投影混色">分层投影混色</option>
+          <option value="barycentric" data-i18n="重心混合">重心混合</option>
+          <option value="ordered" data-i18n="有序抖动">有序抖动</option>
+          <option value="error_diffusion" data-i18n="误差扩散">误差扩散</option>
         </select>
 
         <div id="orderedParams" class="params hidden">
@@ -59,18 +64,18 @@
             <input type="range" id="strength" min="0" max="128" value="64">
           </div>
           <div class="field">
-            <label>色彩空间</label>
+            <label data-i18n="色彩空间">色彩空间</label>
             <select id="colorSpace"><option>RGB</option><option>Lab</option><option>HSV</option></select>
           </div>
           <div class="field">
-            <label>阈值矩阵</label>
+            <label data-i18n="阈值矩阵">阈值矩阵</label>
             <select id="matrix"></select>
           </div>
         </div>
 
         <div id="edParams" class="params hidden">
           <div class="field">
-            <label>扩散核</label>
+            <label data-i18n="扩散核">扩散核</label>
             <select id="filter"><option>FS</option><option>Jarvis</option><option>Stucki</option></select>
           </div>
           <div class="field">
@@ -81,7 +86,7 @@
 
         <div id="baryParams" class="params hidden">
           <div class="field">
-            <label>阈值矩阵</label>
+            <label data-i18n="阈值矩阵">阈值矩阵</label>
             <select id="baryMatrix"></select>
           </div>
           <div class="field">
@@ -90,7 +95,7 @@
           </div>
           <div class="field">
             <label><input type="checkbox" id="gamut"> 凸包投影（改善饱和色）</label>
-            <label><input type="checkbox" id="projLab" checked> 投影走 Lab（ΔE76 口径）</label>
+            <label><input type="checkbox" id="projLab" checked> <span data-i18n="投影走 Lab">投影走 Lab</span></label>
           </div>
           <div class="field">
             <label>面内精修 <span class="val" id="refineVal">2</span> 轮</label>
@@ -112,48 +117,71 @@
 
         <div id="projParams" class="params">
           <div class="field">
-            <label>层数</label>
+            <label data-i18n="层数">层数</label>
             <input type="number" id="projBands" min="2" max="64" value="24">
           </div>
           <div class="field">
-            <label>每层色数</label>
+            <label data-i18n="每层色数">每层色数</label>
             <input type="number" id="projColors" min="2" max="32" value="8">
           </div>
           <div class="field">
-            <label>每色用几个板内色混合</label>
+            <label data-i18n="每色用几个板内色混合">每色用几个板内色混合</label>
             <select id="projMixColors">
-              <option value="4" selected>4 色（四面体重心，最准）</option>
-              <option value="3">3 色（三角形）</option>
-              <option value="2">2 色（线段，更硬朗）</option>
+              <option value="4" selected data-i18n="4 色">4 色</option>
+              <option value="3" data-i18n="3 色">3 色</option>
+              <option value="2" data-i18n="2 色">2 色</option>
             </select>
           </div>
           <div class="field">
-            <label>分层依据</label>
+            <label data-i18n="分层依据">分层依据</label>
             <select id="projEdge">
-              <option value="linear">绝对明度（保色彩）</option>
-              <option value="quantile">自适应等频（保细节）</option>
+              <option value="linear" data-i18n="绝对明度">绝对明度</option>
+              <option value="quantile" data-i18n="自适应等频">自适应等频</option>
             </select>
           </div>
           <div class="field">
-            <label>色彩空间</label>
+            <label data-i18n="色彩空间">色彩空间</label>
             <select id="projSpace"><option>Lab</option><option>RGB</option></select>
           </div>
           <div class="field">
-            <label>阈值矩阵（阶数 × 图案）</label>
+            <label data-i18n="阈值矩阵">阈值矩阵</label>
             <div class="row">
               <select id="projMatrixSize"><option value="4" selected>4×4</option><option value="2">2×2</option></select>
               <select id="projMatrix"></select>
             </div>
           </div>
           <div class="field">
-            <label>线稿保护</label>
-            <select id="projLineKeep">
-              <option value="0" selected>关</option>
-              <option value="1">弱</option>
-              <option value="2">中</option>
-              <option value="3">强</option>
-              <option value="4">整片暗部</option>
-            </select>
+            <label data-i18n="线稿">线稿</label>
+            <div class="row">
+              <select id="projLineKeep" style="flex:1.2">
+                <option value="0" selected data-i18n="关">关</option>
+                <option value="1" data-i18n="弱">弱</option>
+                <option value="2" data-i18n="中">中</option>
+                <option value="3" data-i18n="强">强</option>
+                <option value="4" data-i18n="整片暗部">整片暗部</option>
+              </select>
+              <select id="projLineDir" style="flex:1" title="暗线 / 亮线">
+                <option value="dark" selected data-i18n="暗线">暗线</option>
+                <option value="light" data-i18n="亮线">亮线</option>
+              </select>
+              <select id="projLineClean" style="flex:1">
+                <option value="1" selected data-i18n="清理">清理</option>
+                <option value="0" data-i18n="原样">原样</option>
+              </select>
+            </div>
+            <div class="row" style="margin-top:4px">
+              <input type="range" id="projLineL" min="15" max="90" step="1" value="55" style="flex:1"
+                     title="线色亮度阈值 L*：暗线取更暗的色，亮线取更亮的色">
+              <span class="hint" id="projLineLVal" style="min-width:34px;text-align:right">55</span>
+            </div>
+            <div class="row" style="margin-top:4px">
+              <span class="hint" id="lineInfo">线 0 段</span>
+              <select id="projLineMode" style="flex:1" title="线稿对象：跟随投影，或统一固定成某个板内色">
+                <option value="project" selected data-i18n="跟随投影">跟随投影</option>
+                <option value="fixed" data-i18n="固定色">固定色</option>
+              </select>
+              <button class="mini" id="linePickFixed" data-i18n="取色">取色</button>
+            </div>
           </div>
         </div>
       </section>
@@ -161,10 +189,10 @@
       <section class="card">
         <div class="card-head"><h3>调色板 <span class="badge" id="palCount">63</span>/63</h3></div>
         <div class="pal-buttons">
-          <button class="small" id="selAll" title="全部选中">全选</button>
-          <button class="small" id="selNone" title="全部取消">全不选</button>
-          <button class="small" id="selFree" title="只选免费色">选免费</button>
-          <button class="small" id="selPaid" title="只选付费色">选付费</button>
+          <button class="small" id="selAll" title="全部选中" data-i18n="全选">全选</button>
+          <button class="small" id="selNone" title="全部取消" data-i18n="全不选">全不选</button>
+          <button class="small" id="selFree" title="只选免费色" data-i18n="选免费">选免费</button>
+          <button class="small" id="selPaid" title="只选付费色" data-i18n="选付费">选付费</button>
         </div>
         <div id="paletteSwatches" class="palette"></div>
       </section>
@@ -174,20 +202,20 @@
     <main class="stage">
       <div class="stage-bar">
         <div class="views" id="viewTabs">
-          <button data-view="result" class="active">成品</button>
-          <button data-view="source" class="layer-only">原色</button>
-          <button data-view="projection" class="layer-only">投影色</button>
-          <button data-view="final" class="layer-only">抖动色</button>
+          <button data-view="result" class="active" data-i18n="成品">成品</button>
+          <button data-view="source" class="layer-only" data-i18n="原色">原色</button>
+          <button data-view="projection" class="layer-only" data-i18n="投影色">投影色</button>
+          <button data-view="final" class="layer-only" data-i18n="抖动色">抖动色</button>
           <label class="inline layer-toggle layer-only">
             <input type="checkbox" id="layerOnly"> 只看当前层
           </label>
         </div>
         <div class="stage-actions">
           <span class="zoom" id="zoomLabel">适配</span>
-          <button class="mini" id="zoomFit">适应</button>
+          <button class="mini" id="zoomFit" data-i18n="适应">适应</button>
           <button class="mini" id="zoom100">1:1</button>
-          <button id="enterEditor" class="primary">进入分层编辑器</button>
-          <button id="exitEditor" class="hidden">退出编辑器</button>
+          <button id="enterEditor" class="primary" data-i18n="进入分层编辑器">进入分层编辑器</button>
+          <button id="exitEditor" class="hidden" data-i18n="退出编辑器">退出编辑器</button>
         </div>
       </div>
       <div class="stage-body" id="stageBody">
@@ -198,8 +226,8 @@
         <div class="stage-hint" id="stageHint">选择图片后点「处理」出图</div>
       </div>
       <div class="stage-foot">
-        <button id="processBtn">处理</button>
-        <button id="downloadBtn">下载结果</button>
+        <button id="processBtn" data-i18n="处理">处理</button>
+        <button id="downloadBtn" data-i18n="下载结果">下载结果</button>
       </div>
     </main>
 
@@ -208,20 +236,20 @@
       <section class="card">
         <div class="card-head">
           <h3>图层 <span class="badge" id="bandCount">-</span></h3>
-          <button class="mini" id="openEdge">阈值…</button>
+          <button class="mini" id="openEdge" data-i18n="阈值…">阈值…</button>
         </div>
         <div class="band-list" id="bandList"></div>
       </section>
 
       <section class="card">
         <div class="card-head">
-          <h3>色阶</h3>
-          <button class="mini" id="openGrade">调整…</button>
+          <h3 data-i18n="色阶">色阶</h3>
+          <button class="mini" id="openGrade" data-i18n="调整…">调整…</button>
         </div>
         <div class="hint" id="gradeSummary">黑场 0.00 / 白场 1.00 / 中间调 1.00</div>
         <div class="row">
           <span class="badge" id="lockBadge">未锁定</span>
-          <button class="mini hidden" id="unlockBtn" title="清除全部手绘，之后可以改分层与尺寸">解锁并清除上色</button>
+          <button class="mini hidden" id="unlockBtn" title="清除全部手绘，之后可以改分层与尺寸" data-i18n="解锁并清除上色">解锁并清除上色</button>
         </div>
         <div class="hint" id="lockHint"></div>
       </section>
@@ -243,22 +271,23 @@
           <label class="inline"><input type="checkbox" id="highlightOn" checked> 高亮当前色</label>
         </div>
         <div class="row">
-          <button class="mini" id="undoBtn" title="Ctrl+Z">撤销</button>
-          <button class="mini" id="redoBtn" title="Ctrl+Shift+Z">重做</button>
-          <button class="mini" id="brushClear">清除本层手绘</button>
+          <button class="mini" id="undoBtn" title="Ctrl+Z" data-i18n="撤销">撤销</button>
+          <button class="mini" id="redoBtn" title="Ctrl+Shift+Z" data-i18n="重做">重做</button>
+          <button class="mini" id="brushClear" data-i18n="清除本层手绘">清除本层手绘</button>
         </div>
         <div class="brush-current">
           <span class="swatch big" id="brushSwatch"></span>
           <span id="brushLabel">未选颜色（点下面的色块）</span>
         </div>
+        <div class="hint" style="margin-top:4px">按住 Alt 取色：弹出 63 色盘，点色盘或图上取色 → 当前层新建颜色</div>
       </section>
 
       <section class="card">
         <div class="card-head">
-          <h3>这一层的颜色</h3>
+          <h3 data-i18n="这一层的颜色">这一层的颜色</h3>
           <span>
-            <button class="mini" id="addSlot">+ 颜色</button>
-            <button class="mini" id="importAuto">导入自动</button>
+            <button class="mini" id="addSlot" data-i18n="+ 颜色">+ 颜色</button>
+            <button class="mini" id="importAuto" data-i18n="导入自动">导入自动</button>
           </span>
         </div>
         <div class="slot-list" id="slotList"></div>
@@ -270,22 +299,22 @@
   <div class="container hidden" id="panel-text">
     <div class="controls">
       <div class="field">
-        <label>文字（回车手动换行）</label>
+        <label data-i18n="文字">文字</label>
         <textarea id="txtInput" rows="4" spellcheck="false">你好世界</textarea>
       </div>
 
       <div class="field">
-        <label>字体</label>
+        <label data-i18n="字体">字体</label>
         <select id="txtFont"></select>
         <div class="row" style="margin-top:6px">
-          <button class="small" id="txtFontUpload">载入字体文件…</button>
+          <button class="small" id="txtFontUpload" data-i18n="载入字体文件…">载入字体文件…</button>
           <span class="hint" id="txtFontName" style="margin:0"></span>
         </div>
         <input type="file" id="txtFontFile" accept=".ttf,.otf,.woff,.woff2" style="display:none">
       </div>
 
       <div class="field">
-        <label>字号（像素高度）<span id="txtSizeVal">16</span> px</label>
+        <label><span data-i18n="字号">字号</span><span id="txtSizeVal">16</span> px</label>
         <div class="row">
           <input type="range" id="txtSizeRange" min="6" max="64" value="16" style="flex:1">
           <input type="number" id="txtSize" min="6" max="64" value="16" style="width:64px">
@@ -295,10 +324,10 @@
       </div>
 
       <div class="field">
-        <label>换行方式</label>
+        <label data-i18n="换行方式">换行方式</label>
         <select id="txtWrap">
-          <option value="manual">手动（只按回车）</option>
-          <option value="auto">自动（按每行字数）</option>
+          <option value="manual" data-i18n="手动">手动</option>
+          <option value="auto" data-i18n="自动">自动</option>
         </select>
         <div class="row hidden" id="wrapRow" style="margin-top:6px">
           <span class="hint" style="margin:0">每行最多</span>
@@ -313,17 +342,17 @@
       </div>
 
       <div class="field">
-        <label>前景色（点下方色块可快速取调色板的颜色）</label>
+        <label data-i18n="前景色">前景色</label>
         <div class="row">
           <input type="color" id="txtColor" value="#ffffff">
           <span class="hint" id="txtColorHex" style="margin:0">#ffffff</span>
         </div>
         <div class="row" style="margin-top:6px">
           <select id="txtPalGroup">
-            <option value="all">调色板：全部 63 色</option>
-            <option value="gray">黑白灰（6 色，低字号最清晰）</option>
-            <option value="free">免费色（不含付费色）</option>
-            <option value="paid">付费色</option>
+            <option value="all" data-i18n="调色板：全部 63 色">调色板：全部 63 色</option>
+            <option value="gray" data-i18n="黑白灰">黑白灰</option>
+            <option value="free" data-i18n="免费色">免费色</option>
+            <option value="paid" data-i18n="付费色">付费色</option>
           </select>
         </div>
         <div id="txtPalette" class="palette-mini"></div>
@@ -332,7 +361,7 @@
       </div>
 
       <div class="field">
-        <label>背景色</label>
+        <label data-i18n="背景色">背景色</label>
         <div class="row">
           <input type="color" id="txtBg" value="#000000">
           <label class="inline"><input type="checkbox" id="txtBgTransparent" checked> 透明背景</label>
@@ -341,15 +370,15 @@
       </div>
 
       <div class="field">
-        <label>灰度级数</label>
+        <label data-i18n="灰度级数">灰度级数</label>
         <select id="txtLevels">
-          <option value="1">1 级（二值硬边，传统像素风）</option>
-          <option value="2">2 级</option>
-          <option value="3">3 级</option>
-          <option value="4" selected>4 级（推荐，低字号最清晰）</option>
-          <option value="6">6 级</option>
-          <option value="8">8 级</option>
-          <option value="16">16 级（接近平滑抗锯齿）</option>
+          <option value="1" data-i18n="1 级">1 级</option>
+          <option value="2" data-i18n="2 级">2 级</option>
+          <option value="3" data-i18n="3 级">3 级</option>
+          <option value="4" selected data-i18n="4 级">4 级</option>
+          <option value="6" data-i18n="6 级">6 级</option>
+          <option value="8" data-i18n="8 级">8 级</option>
+          <option value="16" data-i18n="16 级">16 级</option>
         </select>
         <div class="hint">把超采样算出的覆盖率量化成几档明暗，用灰阶画出「半覆盖」的笔画。
           低字号下比二值清晰得多；选 1 才是硬边像素风</div>
@@ -362,34 +391,34 @@
       </div>
 
       <div class="field">
-        <label>边缘阈值 <span id="txtThrVal">64</span>（越小笔画越粗、越大越细）</label>
+        <label><span data-i18n="边缘阈值">边缘阈值</span> <span id="txtThrVal">64</span></label>
         <input type="range" id="txtThr" min="1" max="254" value="64">
         <div class="hint" id="txtThrHint">仅「1 级（二值）」模式生效；小字号建议 50~80</div>
       </div>
 
       <div class="field">
-        <label>超采样</label>
+        <label data-i18n="超采样">超采样</label>
         <select id="txtSupersample">
-          <option value="1">1x（关闭）</option>
+          <option value="1" data-i18n="1x">1x</option>
           <option value="2">2x</option>
-          <option value="4" selected>4x（推荐）</option>
-          <option value="8">8x（最精细，较慢）</option>
+          <option value="4" selected data-i18n="4x">4x</option>
+          <option value="8" data-i18n="8x">8x</option>
         </select>
         <div class="hint">先在高分辨率渲染再降采样，低字号下笔画覆盖率估得更准、更完整</div>
       </div>
 
       <div class="field">
-        <label>导出放大倍数</label>
+        <label data-i18n="导出放大倍数">导出放大倍数</label>
         <select id="txtScale">
-          <option value="1">1x（原始像素）</option>
+          <option value="1" data-i18n="1x">1x</option>
           <option value="2">2x</option>
-          <option value="4" selected>4x</option>
-          <option value="8">8x</option>
+          <option value="4" selected data-i18n="4x">4x</option>
+          <option value="8" data-i18n="8x">8x</option>
         </select>
       </div>
 
       <div class="buttons">
-        <button id="txtDownload">下载 PNG</button>
+        <button id="txtDownload" data-i18n="下载 PNG">下载 PNG</button>
       </div>
       <div class="hint">
         输出是逐像素的位图（抗锯齿边缘已按阈值二值化）；预览按最近邻放大，不会糊。
@@ -418,8 +447,8 @@
     <input type="range" id="gradeGamma" min="0.3" max="3" step="0.05" value="1">
     <span class="grade-val" id="gradeGammaVal">1.00</span></div>
   <div class="row" style="justify-content:flex-end; margin-top:10px">
-    <button class="mini" id="gradeReset">复位</button>
-    <button class="mini primary" id="gradeApply">应用</button>
+    <button class="mini" id="gradeReset" data-i18n="复位">复位</button>
+    <button class="mini primary" id="gradeApply" data-i18n="应用">应用</button>
   </div>
   <div class="hint">PS 输入白场语义：先按黑/白场拉伸，超出部分钳到端点 —— 灰底会被压成纯黑或纯白</div>
 </div>
@@ -429,8 +458,8 @@
   <div class="fp-title"><span id="slotDialogTitle">颜色参数</span><span class="fp-close" id="slotDialogClose">x</span></div>
   <div id="slotDialogBody" class="slot-dialog-body"></div>
   <div class="row" style="justify-content:flex-end; padding:0 14px">
-    <button class="mini" id="slotDialogDel">删除这个颜色</button>
-    <button class="mini primary" id="slotDialogOk">完成</button>
+    <button class="mini" id="slotDialogDel" data-i18n="删除这个颜色">删除这个颜色</button>
+    <button class="mini primary" id="slotDialogOk" data-i18n="完成">完成</button>
   </div>
 </div>
 
@@ -442,10 +471,11 @@
   <div class="hint">拖动面板上的细线调整分界；两端固定。背景直方图标出像素落在哪。</div>
 </div>
 
-  <script src="delaunay.js?v=08f8b14e"></script>
-  <script src="dither.js?v=08f8b14e"></script>
-  <script src="textpixel.js?v=08f8b14e"></script>
-  <script src="app.js?v=08f8b14e"></script>
+  <script src="delaunay.js?v=8e8b6418"></script>
+  <script src="dither.js?v=8e8b6418"></script>
+  <script src="textpixel.js?v=8e8b6418"></script>
+  <script src="app.js?v=8e8b6418"></script>
 
+<div id="pickPalette" class="pick-palette hidden"></div>
 </body>
 </html>

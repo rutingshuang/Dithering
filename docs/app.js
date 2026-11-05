@@ -77,7 +77,12 @@ function gatherOpts() {
       matrix: $('projMatrix').value || 'bayer4',
       ...(() => {
         const L = LINE_LEVELS[+($('projLineKeep') || {}).value || 0] || LINE_LEVELS[0];
-        return { lineKeep: L.keep, lineMode: L.mode, lineThresh: L.thresh, lineMix: L.mix };
+        const clean = +($('projLineClean') || {}).value !== 0;
+        const darkL = +($('projLineL') || {}).value || 55;
+        const dir = ($('projLineDir') || {}).value || 'dark';
+        return { lineKeep: L.keep, lineMode: L.mode, lineThresh: L.thresh,
+                 lineMix: L.mix, lineClean: clean, lineDarkL: darkL, lineDir: dir,
+                 lineSlots: ED.lineSlots };
       })(),
       black: Math.min(black, white - 0.02),
       white: Math.max(white, black + 0.02),
@@ -128,10 +133,14 @@ const ED = {
   labels: null,      // Int32Array(npix)，值 = 槽 uid，-1 = 未手绘
   labelSlots: {},    // uid -> 槽
   uidSeq: 1,
+  lineSlots: {},       // 段 id -> { mode, color }
+  linePick: false,     // 下一次点画布 = 给线稿选固定色
+  edgesManual: false,  // 分界是否被手动拖过（调色阶时按比例保留，而不是重置）
   curBand: 0,
   curSlotUid: -1,
   lastSlotOfBand: {},// 每层上次用的槽，切层不丢画笔色
   editing: false,    // 是否处于编辑器模式
+  showSrc: false,    // 非编辑器模式：单击画布临时看原图
   view: 'result',    // result | source | projection | final
   layerOnly: false,  // 投影色/抖动色是否只看当前层
   highlightUid: -1,  // 只看某个颜色的区域（-1 = 不高亮）
@@ -161,11 +170,12 @@ const SLOT_METHODS = [
   ['error', '层内扩散'], ['ed', '二维扩散'],
 ];
 const MATRIX_NAMES = [
-  ['bayer', 'bayer'], ['clustered', 'clustered'], ['diagonal', 'diagonal'], ['spiral', 'spiral'],
+  ['bayer', 'bayer'], ['clustered', 'clustered'], ['diagonal', 'diagonal'],
+  ['spiral', 'spiral'], ['rounddot', 'rounddot'],
 ];
 // 界面上可见的矩阵键（4×4 与 2×2 各四个）
-const MATRIX_KEYS = ['bayer4', 'clustered4', 'diagonal4', 'spiral4',
-                     'bayer2', 'clustered2', 'diagonal2', 'spiral2'];
+const MATRIX_KEYS = ['bayer4', 'clustered4', 'diagonal4', 'spiral4', 'rounddot4',
+                     'bayer2', 'clustered2', 'diagonal2', 'spiral2', 'rounddot2'];
 
 const onEl = (id, ev, fn) => {
   const el = $(id);
@@ -495,6 +505,7 @@ function buildPlan(opts, keepEdges) {
   }
   const o = Object.assign({}, opts);
   if (keepEdges && ED.plan && oldN === nBands) o.edges = Array.from(ED.plan.edges);
+  else ED.edgesManual = false;      // 重新生成分界 = 手调标记作废
 
   const plan = analyzeProjection(src, baryData, o);
   plan.sig = optsSig(opts);
@@ -621,6 +632,15 @@ function mainKey() {
 // 成品图：按当前方法算，与编辑器状态无关的走 runDither，投影走编辑器管线
 function mainResult() {
   if (!srcData) return null;
+  // 非编辑器模式单击画布 = 在原图/成品之间切换
+  if (ED.showSrc && !ED.editing) {
+    const [tw, th] = computeTarget(srcData.width, srcData.height);
+    const sk = 'src@' + tw + 'x' + th + '@' + (srcData.__rev || 0);
+    if (mainCache.key === sk && mainCache.im) return mainCache.im;
+    const s = resizeData(srcData, tw, th);
+    mainCache = { key: sk, im: s };
+    return s;
+  }
   const m = $('method').value;
   if (m === 'projection') ensurePlan();
   const key = mainKey();
@@ -730,6 +750,9 @@ function refreshLockState() {
   if ($('projMatrix')) $('projMatrix').disabled = locked;
   if ($('projMatrixSize')) $('projMatrixSize').disabled = locked;
   if ($('projLineKeep')) $('projLineKeep').disabled = locked;
+  if ($('projLineClean')) $('projLineClean').disabled = locked;
+  if ($('projLineDir')) $('projLineDir').disabled = locked;
+  if ($('projLineL')) $('projLineL').disabled = locked;
   if ($('lockBadge')) {
     $('lockBadge').textContent = locked ? '已锁定 · ' + n + ' px 手绘' : '未锁定';
     $('lockBadge').style.color = locked ? 'var(--warn)' : '';
@@ -893,6 +916,9 @@ function paintCanvas() {
   const cv = $('dstCanvas');
   if (!cv) return;
   const im = viewImage();
+  if ($('lineInfo') && im && im.lineCount !== undefined) {
+    $('lineInfo').textContent = '线 ' + im.lineCount + ' 段';
+  }
   if (!im) {
     if ($('stageHint')) $('stageHint').textContent = srcData ? '点「处理」出图' : '先选择一张图片';
     return;
@@ -917,10 +943,14 @@ function paintCanvas() {
       : ' · 这个颜色在图上没有像素';
   }
   if ($('stageHint')) {
-    $('stageHint').textContent = ED.view === 'result'
-      ? hints.result
-      : (ED.layerOnly ? '只看第 ' + (ED.curBand + 1) + ' 层 · ' : '第 ' + (ED.curBand + 1) + ' 层可涂 · ')
-        + hints[ED.view] + hlTip;
+    if (ED.showSrc && !ED.editing) {
+      $('stageHint').textContent = '原图（再单击一次切回成品）';
+    } else {
+      $('stageHint').textContent = ED.view === 'result'
+        ? hints.result + (ED.editing ? '' : ' · 单击看原图')
+        : (ED.layerOnly ? '只看第 ' + (ED.curBand + 1) + ' 层 · ' : '第 ' + (ED.curBand + 1) + ' 层可涂 · ')
+          + hints[ED.view] + hlTip;
+    }
   }
 }
 
@@ -1062,6 +1092,8 @@ function canvasPos(cv, ev) {
           Math.floor((ev.clientY - r.top) * cv.height / r.height)];
 }
 
+// 光标直接画出「这一笔会涂到哪些像素」的硬边格子（和 brushStamp 的判定一致），
+// 不是画一个圆：圆和真实落点对不上，边缘像素到底涂没涂看不出来。
 function drawCursor(x, y) {
   const cl = $('cursorLayer'), cv = $('dstCanvas');
   if (!cl || !cv || ED.painting) return;    // 拖动中保留笔迹，别清屏
@@ -1069,16 +1101,33 @@ function drawCursor(x, y) {
   g.clearRect(0, 0, cl.width, cl.height);
   if (x === undefined) return;
   const scale = cl.width / cv.width;
-  g.strokeStyle = ED.eraser ? 'rgba(255,150,150,.95)' : 'rgba(255,255,255,.95)';
-  g.lineWidth = 1.5;
-  g.beginPath();
-  g.arc(x * scale, y * scale, Math.max(2, ED.brush * scale), 0, Math.PI * 2);
-  g.stroke();
-  g.strokeStyle = 'rgba(0,0,0,.6)';
+  const cell = Math.max(1, scale);
+  const r = Math.max(1, ED.brush);
+  const r2 = r * r;
+  const plan = ED.plan;
+  const crossBand = !!($('brushCrossBand') && $('brushCrossBand').checked);
+  const inKing = ED.eraser ? [255, 150, 150] : [255, 255, 255];
+  const rgb = (a) => 'rgba(' + inKing[0] + ',' + inKing[1] + ',' + inKing[2] + ',' + a + ')';
   g.lineWidth = 1;
-  g.beginPath();
-  g.arc(x * scale, y * scale, Math.max(2, ED.brush * scale) + 1, 0, Math.PI * 2);
-  g.stroke();
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dx = -r; dx <= r; dx++) {
+      if (dx * dx + dy * dy > r2) continue;
+      const px = x + dx, py = y + dy;
+      if (px < 0 || py < 0 || px >= cv.width || py >= cv.height) continue;
+      // 落在别的层上的格子不会被涂：画成很淡的灰，既看得见光标，也看得出不会生效
+      const off = plan && plan.bandOf && !crossBand
+        && plan.bandOf[py * plan.width + px] !== ED.curBand;
+      if (off) {
+        g.fillStyle = 'rgba(120,120,120,.18)';
+        g.strokeStyle = 'rgba(140,140,140,.30)';
+      } else {
+        g.fillStyle = rgb(0.42);
+        g.strokeStyle = rgb(0.95);
+      }
+      g.fillRect(px * scale, py * scale, cell, cell);
+      g.strokeRect(px * scale + 0.5, py * scale + 0.5, Math.max(1, cell - 1), Math.max(1, cell - 1));
+    }
+  }
 }
 
 // 拖动中在 overlay 上画笔迹：全量重绘一张 810K px 的图要 200ms+，
@@ -1109,6 +1158,32 @@ function bindPaint() {
     if (ev.button !== 0) return;      // 只有左键才画笔；中键留给平移
     if (!ED.editing || ED.view === 'result') return;
     if (!ED.plan) return;
+    // 线稿取固定色：点一下画面即取该像素的板内色
+    if (ED.linePick) {
+      ev.preventDefault();
+      const [lx, ly] = canvasPos(cv, ev);
+      const imx = viewImage();
+      if (imx && lx >= 0 && ly >= 0 && lx < imx.width && ly < imx.height) {
+        const oo = (ly * imx.width + lx) * 4;
+        const ci = nearestRGBIdx([imx.data[oo], imx.data[oo + 1], imx.data[oo + 2]], palette);
+        ED.lineSlots = { __all: { mode: 'fixed', color: ci } };
+        if ($('projLineMode')) $('projLineMode').value = 'fixed';
+        ED.linePick = false;
+        bumpRev(); paintCanvas();
+        flashHint('线稿固定色已设为 #' + ci);
+      }
+      return;
+    }
+    // Alt+左键：从画面上取色（取的是当前显示视图的颜色），不进画笔
+    if (ev.altKey) {
+      ev.preventDefault();
+      const [px, py] = canvasPos(cv, ev);
+      const im = viewImage();
+      if (!im || px < 0 || py < 0 || px >= im.width || py >= im.height) return;
+      const o = (py * im.width + px) * 4;
+      pickColorIntoBand([im.data[o], im.data[o + 1], im.data[o + 2]]);
+      return;
+    }
     if (!ED.eraser && ED.curSlotUid < 0) {
       flashHint('先在这一层的颜色列表里点一个颜色，再涂');
       return;
@@ -1167,10 +1242,32 @@ function bindPaint() {
   // 滚轮缩放：任何视图、任何方法都能用（以前只限编辑器内，成品模式调不了）
   cv.addEventListener('wheel', ev => {
     ev.preventDefault();
+    // Alt+滚轮 = 调笔刷大小，并且这一下不缩放（两者一起动会同时改大小和视图）
+    if (ev.altKey && ED.editing) {
+      ev.stopPropagation();
+      const step = ev.deltaY < 0 ? 1 : -1;
+      ED.brush = Math.max(1, Math.min(60, ED.brush + step));
+      if ($('brushSize')) $('brushSize').value = ED.brush;
+      if ($('brushSizeVal')) $('brushSizeVal').textContent = ED.brush;
+      const [bx, by] = canvasPos(cv, ev);
+      drawCursor(bx, by);
+      return;
+    }
     const cur = ED.zoom > 0 ? ED.zoom : Math.round((ED.scale || 1) * 100);
     ED.zoom = Math.max(25, Math.min(1200, Math.round(cur * (ev.deltaY < 0 ? 1.15 : 1 / 1.15))));
     fitCanvas();
   }, { passive: false });
+
+  // 非编辑器模式：单击画布在原图与成品间切换（编辑器里点击是画笔，不参与）
+  let clickMoved = false;
+  cv.addEventListener('mousedown', ev => { if (ev.button === 0) clickMoved = false; });
+  cv.addEventListener('mousemove', ev => { if (ev.buttons & 1) clickMoved = true; });
+  cv.addEventListener('click', ev => {
+    if (ED.editing || ev.altKey || clickMoved) return;
+    if (!srcData) return;
+    ED.showSrc = !ED.showSrc;
+    paintCanvas();
+  });
 }
 
 // 改抖动方法时，如果正停在「投影色」视图，自动切到「抖动色」——
@@ -1379,6 +1476,7 @@ function gradeHistDrag(startEv) {
       const lo = ED.plan.edges[best.k - 1] + 0.002;
       const hi = ED.plan.edges[best.k + 1] - 0.002;
       ED.plan.edges[best.k] = Math.max(lo, Math.min(hi, v));
+      ED.edgesManual = true;
       // 拖动中只移动这条线，不重建分桶 —— 重建会连带重渲整图（200ms+），
       // 线就会卡住不动。松手后统一重算（见 up）。
     }
@@ -1398,12 +1496,37 @@ function gradeHistDrag(startEv) {
   document.addEventListener('mouseup', up);
 }
 
+// 上一次「已生效」的色阶：调黑/白场时用它把旧的手动分界换算到新 luma 空间
+let gradePrev = { b: 0, w: 1, g: 1 };
+
+// lumaCurve 的逆：把「曲线后的值」还原成曲线前的归一化亮度
+function invLumaCurve(v, b, w, g) {
+  const t = Math.max(0, Math.min(1, v));
+  const x = (g && g !== 1) ? Math.pow(t, 1 / g) : t;
+  return b + (w - b) * x;
+}
+
 function applyGrade() {
   if (layersLocked()) { flashHint('色阶已锁定：先「解锁并清除上色」'); return; }
+  const b = +$('gradeBlack').value;
+  const w = +$('gradeWhite').value;
+  const g = +$('gradeGamma').value;
   ED.zoom = 0;
-  // 色阶改变的是 luma 本身，旧的手调分界是「相对旧 luma」的位置，沿用会错位 ——
-  // 表现出来就是「调了色阶画面几乎没变」。所以这里重新按分层依据生成分界。
-  if (ED.editing) analyzeNow(false);
+  // 手动拖过的分界：按新旧色阶换算出「同一个亮度断点」在新 luma 上的位置，
+  // 这样调黑/白场时中间各层的划分跟着一起走，而不是被打回默认。
+  const manual = ED.edgesManual && ED.plan && ED.plan.edges;
+  if (!manual) ED.edgesManual = false;
+  if (manual) {
+    const prev = gradePrev;
+    const mapped = Array.from(ED.plan.edges).map(e =>
+      lumaCurve(invLumaCurve(e, prev.b, prev.w, prev.g), b, w, g));
+    for (let k = 1; k < mapped.length; k++) {
+      mapped[k] = Math.max(mapped[k], mapped[k - 1] + 1e-6);
+    }
+    ED.plan.edges = mapped;
+  }
+  gradePrev = { b, w, g };
+  if (ED.editing) analyzeNow(!!manual);
   else { invalidatePlan(); paintCanvas(); }
   updateGradeSummary();
   renderGradeHist();
@@ -1639,6 +1762,40 @@ onEl('projMatrixSize', 'change', () => { fillMatrixSelect($('projMatrix'), $('pr
 onEl('projMatrix', 'change', onParamChange);
 // 线稿保护只作用在渲染末尾（不改 plan、不改手绘归属），重画即可
 onEl('projLineKeep', 'change', () => { bumpRev(); paintCanvas(); });
+onEl('projLineClean', 'change', () => { bumpRev(); paintCanvas(); });
+onEl('projLineDir', 'change', () => { bumpRev(); paintCanvas(); });
+onEl('projLineMode', 'change', () => {
+  const mode = $('projLineMode').value;
+  ED.lineSlots = {};
+  if (mode === 'fixed') {
+    const first = [...selected][0];
+    ED.lineSlots.__all = { mode: 'fixed', color: (first === undefined ? 0 : first) };
+  }
+  bumpRev(); paintCanvas();
+});
+onEl('linePickFixed', 'click', () => {
+  ED.linePick = true;
+  flashHint('点画面上的任意颜色，作为线稿的固定色');
+});
+onEl('projLineL', 'input', () => {
+  if ($('projLineLVal')) $('projLineLVal').textContent = $('projLineL').value;
+  clearTimeout(window.__lineLTimer);
+  window.__lineLTimer = setTimeout(() => { bumpRev(); paintCanvas(); }, 220);
+});
+
+// Alt 按下进取色模式；松开退出。输入框里打字不触发。
+window.addEventListener('keydown', ev => {
+  if (ev.key !== 'Alt' || ev.repeat) return;
+  const t = ev.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (!ED.editing) return;
+  setPickMode(true);
+});
+window.addEventListener('keyup', ev => {
+  if (ev.key !== 'Alt') return;
+  setPickMode(false);
+});
+window.addEventListener('blur', () => setPickMode(false));
 
 onEl('method', 'change', () => {
   updateMethodParams();
@@ -1720,6 +1877,86 @@ function syncCompFromWH() {
 });
 
 // ---------- 调色板 ----------
+// ---------- Alt 取色 ----------
+// 按住 Alt：左侧弹出放大色盘，同时临时取消「高亮当前色 / 只看当前层」，
+// 让画面回到当前层的成品状态，方便对着成品挑色。松开 Alt 恢复原样。
+let pickMode = false;
+let pickSaved = null;
+
+function buildPickPalette() {
+  const box = $('pickPalette');
+  if (!box || box.dataset.built === '1') return;
+  box.innerHTML = '';
+  const t = document.createElement('div');
+  t.className = 'pk-title';
+  t.textContent = '取色（松开 Alt 退出）';
+  box.appendChild(t);
+  for (let i = 0; i < palette.length; i++) {
+    const c = palette[i];
+    const d = document.createElement('div');
+    d.className = 'pk' + (D.paid && D.paid[i] ? ' paid' : '');
+    d.style.background = rgbCss(c);
+    d.title = (D.names && D.names[i] ? D.names[i] + ' ' : '') + '(' + c.join(',') + ')';
+    // 按下即取（Alt+左键）；不冒泡，避免落到画布的画笔逻辑
+    d.addEventListener('mousedown', ev => {
+      if (!ev.altKey || ev.button !== 0) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      pickColorIntoBand(c, i);
+    });
+    box.appendChild(d);
+  }
+  box.dataset.built = '1';
+}
+
+function setPickMode(on) {
+  if (on === pickMode) return;
+  pickMode = on;
+  const box = $('pickPalette');
+  if (on) {
+    buildPickPalette();
+    pickSaved = { hl: ED.highlightUid, hlOff: ED.highlightOff, only: ED.layerOnly };
+    ED.highlightUid = -1;
+    ED.highlightOff = true;
+    ED.layerOnly = false;
+    if (box) box.classList.remove('hidden');
+    bumpRev();
+    paintCanvas();
+  } else {
+    if (pickSaved) {
+      ED.highlightUid = pickSaved.hl;
+      ED.highlightOff = pickSaved.hlOff;
+      ED.layerOnly = pickSaved.only;
+      pickSaved = null;
+    }
+    if (box) box.classList.add('hidden');
+    bumpRev();
+    paintCanvas();
+  }
+}
+
+// 取到的颜色放进「当前层」：没有同色槽就新建一个（跟随全局矩阵），并设为画笔色
+function pickColorIntoBand(rgb, palIdx) {
+  if (!ED.plan) { flashHint('先进编辑器并等画面出来'); return; }
+  const band = ED.curBand;
+  if (!ED.slots[band]) ED.slots[band] = [];
+  const col = palIdx !== undefined ? palIdx : nearestRGBIdx(rgb, palette);
+  let sv = ED.slots[band].find(x => x.color === col);
+  if (!sv) {
+    sv = slotDefaults(col);
+    sv.matrixAuto = true;                 // 默认跟随全局面板
+    ED.slots[band].push(sv);
+    ED.labelSlots[sv.uid] = sv;
+    flashHint('第 ' + (band + 1) + ' 层新建颜色 #' + col + '（跟随全局矩阵）');
+  } else {
+    flashHint('第 ' + (band + 1) + ' 层已有该颜色，直接切过去');
+  }
+  selectSlot(sv.uid);
+  renderSlots(band);
+  bumpRev();
+  afterEdit();
+}
+
 function renderPalette() {
   const box = $('paletteSwatches');
   box.innerHTML = '';
@@ -1941,6 +2178,9 @@ onEl('openGrade', 'click', () => {
   if (!$('gradePanel').classList.contains('hidden')) renderGradeHist();
 });
 onEl('gradeClose', 'click', () => $('gradePanel').classList.add('hidden'));
+// 色阶滑块：拖动即生效（防抖 220ms）。以前只更新标签，必须点「应用」才重算，
+// 观感就是「调了完全没反应」。
+let gradeTimer = null;
 ['gradeBlack', 'gradeWhite', 'gradeGamma'].forEach(id => {
   onEl(id, 'input', () => {
     const v = +$(id).value;
@@ -1949,6 +2189,8 @@ onEl('gradeClose', 'click', () => $('gradePanel').classList.add('hidden'));
     if ($(ids[label])) $(ids[label]).textContent = v.toFixed(2);
     renderGradeHist();
     updateGradeSummary();
+    clearTimeout(gradeTimer);
+    gradeTimer = setTimeout(applyGrade, 220);
   });
 });
 onEl('gradeApply', 'click', () => { applyGrade(); renderGradeHist(); });
@@ -2108,3 +2350,41 @@ document.querySelectorAll('.tab').forEach(btn => {
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
 })();
+
+const I18N_EN = {"图像抖动": "Image Dither", "汉字像素图": "Text Pixels", "图像": "Image", "输出尺寸": "Output Size", "抖动方法": "Dither Method", "分层投影混色": "Layered Projection", "重心混合": "Barycentric Mix", "有序抖动": "Ordered Dither", "误差扩散": "Error Diffusion", "色彩空间": "Color Space", "阈值矩阵": "Threshold Matrix", "扩散核": "Diffusion Kernel", "层数": "Bands", "每层色数": "Colors / Band", "每色用几个板内色混合": "Palette Colors / Mix", "4 色": "4 Colors", "3 色": "3 Colors", "2 色": "2 Colors", "分层依据": "Band Split", "绝对明度": "Absolute Luma", "自适应等频": "Adaptive Quantile", "线稿保护": "Line Keep", "关": "Off", "弱": "Weak", "中": "Medium", "强": "Strong", "整片暗部": "Solid Dark", "线稿清理": "Line Cleanup", "开": "On", "全选": "Select All", "全不选": "Select None", "选免费": "Free Only", "选付费": "Paid Only", "成品": "Result", "原色": "Source", "投影色": "Projection", "抖动色": "Dithered", "适应": "Fit", "进入分层编辑器": "Open Editor", "退出编辑器": "Close Editor", "处理": "Process", "下载结果": "Download", "阈值…": "Threshold…", "色阶": "Levels", "调整…": "Adjust…", "解锁并清除上色": "Unlock & Clear", "撤销": "Undo", "重做": "Redo", "清除本层手绘": "Clear Band Paint", "这一层的颜色": "Colors in This Band", "+ 颜色": "+ Color", "导入自动": "Import Auto", "文字": "Text", "字体": "Font", "载入字体文件…": "Load Font…", "换行方式": "Line Break", "手动": "Manual", "自动": "Auto", "前景色": "Foreground", "调色板：全部 63 色": "Palette: all 63", "黑白灰": "Grayscale", "免费色": "Free Colors", "付费色": "Paid Colors", "背景色": "Background", "灰度级数": "Gray Levels", "1 级": "1 Level", "2 级": "2 Levels", "3 级": "3 Levels", "4 级": "4 Levels", "6 级": "6 Levels", "8 级": "8 Levels", "16 级": "16 Levels", "超采样": "Supersampling", "导出放大倍数": "Export Scale", "下载 PNG": "Download PNG", "复位": "Reset", "应用": "Apply", "删除这个颜色": "Delete Color", "完成": "Done", "1x": "1x", "4x": "4x", "8x": "8x", "中文": "Chinese", "像素图": "Pixels", "凸包投影": "Hull Projection", "只看当前层": "Current Band Only", "图层": "Layers", "字号": "Font Size", "强度": "Strength", "扰动强度": "Perturbation", "投影走 Lab": "Project in Lab", "权重截断": "Weight Cutoff", "橡皮": "Eraser", "混合跨度上限": "Mix Span Limit", "画笔": "Brush", "行距": "Line Height", "调色板": "Palette", "跨层涂": "Cross-band Paint", "轮": "Rounds", "边缘保护阈值": "Edge Guard Threshold", "边缘阈值": "Edge Threshold", "线稿": "Linework", "暗线": "Dark line", "亮线": "Light line", "清理": "Clean", "原样": "Raw", "透明背景": "Transparent BG", "面内精修": "In-face Refine", "颜色限制在调色板内": "Clamp to Palette", "高亮当前色": "Highlight Current"};
+let LANG = 'zh';
+function t(s) { return LANG === 'en' ? (I18N_EN[s] || s) : s; }
+function applyLang(lang, save) {
+  LANG = (lang === 'en') ? 'en' : 'zh';
+  document.documentElement.lang = (LANG === 'en') ? 'en' : 'zh-CN';
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = t(el.dataset.i18n);
+  });
+  // 带子元素的控件（<label>强度 <span>64</span></label>）用直接文本节点兜底：
+  // 只动 label/option/button/h3/th 自己的文本，不碰里面的 span/input
+  document.querySelectorAll('label,option,button,h3,th,legend').forEach(el => {
+    if (el.hasAttribute('data-i18n')) return;
+    Array.from(el.childNodes).forEach(node => {
+      if (node.nodeType !== 3) return;
+      const raw = (node.__raw !== undefined) ? node.__raw : node.nodeValue;
+      const clean = raw.replace(/[（(][^）)]*[）)]/g, '').trim();
+      if (!clean) return;
+      node.__raw = raw;
+      const want = (LANG === 'en') ? (I18N_EN[clean] || clean) : clean;
+      if (node.nodeValue.trim() !== want) {
+        node.nodeValue = node.nodeValue.replace(node.nodeValue.trim(), want);
+      }
+    });
+  });
+  if ($('langSel')) $('langSel').value = LANG;
+  if (save !== false) { try { localStorage.setItem('dither.lang', LANG); } catch (e) {} }
+  try { renderPalette(); } catch (e) {}
+}
+onEl('langSel', 'change', () => applyLang($('langSel').value));
+(function initLang() {
+  let saved = null;
+  try { saved = localStorage.getItem('dither.lang'); } catch (e) {}
+  const nav = (navigator.language || 'en').toLowerCase();
+  applyLang(saved || (nav.indexOf('zh') === 0 ? 'zh' : 'en'), false);
+})();
+

@@ -17,12 +17,16 @@ const DITHER_MATRICES = {
   clustered2: [[0,1],[2,3]],
   diagonal2:  [[3,1],[0,2]],
   spiral2:    [[1,3],[2,0]],
+  // 圆点（欧氏环）：同阶下比 clustered 的方点色差低一档，2×2 退化成一个 L 形
+  rounddot4:  [[12,5,6,13],[4,0,1,7],[11,3,2,8],[15,10,9,14]],
+  rounddot2:  [[0,1],[3,2]],
 };
 // 旧键名兼容（外部脚本/工程文件里可能还写着 'bayer'）
 DITHER_MATRICES.bayer = DITHER_MATRICES.bayer4;
 DITHER_MATRICES.clustered = DITHER_MATRICES.clustered4;
 DITHER_MATRICES.diagonal = DITHER_MATRICES.diagonal4;
 DITHER_MATRICES.spiral = DITHER_MATRICES.spiral4;
+DITHER_MATRICES.rounddot = DITHER_MATRICES.rounddot4;
 
 
 // ---------- 颜色转换 ----------
@@ -1008,6 +1012,143 @@ function pairMix2(target, D, levels, penalty) {
 // 必须在原图上算再下采样：20% 的图里细线已经被平均成浅灰，暗谷没了。
 const LINE_CACHE = new Map();
 
+// ---------- 线稿清理：骨架化 ----------
+// 2px 宽的斜线在像素网格上会变成「这行 4 个、下行 5 个、列上重叠 1~2 个」的阶梯块，
+// 看起来脏。Zhang-Suen 细化把细线压成 8 连通 1px，换行换列只走对角，不再有正交重叠。
+// 粗块（翅膀暗部那种）不参与：先腐蚀找出宽度 > 2 的芯，把那片原样保留，只细化其余。
+function morphPass(m, w, h, dilate) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let hit = dilate ? 0 : 1;
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) { if (!dilate) hit = 0; continue; }
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const v = (xx < 0 || xx >= w) ? 0 : m[yy * w + xx];
+          if (dilate) { if (v) hit = 1; } else if (!v) hit = 0;
+        }
+      }
+      out[y * w + x] = hit;
+    }
+  }
+  return out;
+}
+
+function thinMask(mask, w, h, maxIter) {
+  const img = Uint8Array.from(mask);
+  for (let it = 0; it < (maxIter || 40); it++) {
+    let changed = false;
+    for (let step = 0; step < 2; step++) {
+      const del = [];
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+          const i = y * w + x;
+          if (!img[i]) continue;
+          const p2 = img[i - w], p3 = img[i - w + 1], p4 = img[i + 1], p5 = img[i + w + 1];
+          const p6 = img[i + w], p7 = img[i + w - 1], p8 = img[i - 1], p9 = img[i - w - 1];
+          const B = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+          if (B < 2 || B > 6) continue;
+          const seq = [p2, p3, p4, p5, p6, p7, p8, p9, p2];
+          let A = 0;
+          for (let k = 0; k < 8; k++) if (!seq[k] && seq[k + 1]) A++;
+          if (A !== 1) continue;
+          if (step === 0) { if (p2 * p4 * p6 || p4 * p6 * p8) continue; }
+          else { if (p2 * p4 * p8 || p2 * p6 * p8) continue; }
+          del.push(i);
+        }
+      }
+      if (del.length) { for (let k = 0; k < del.length; k++) img[del[k]] = 0; changed = true; }
+    }
+    if (!changed) break;
+  }
+  return img;
+}
+
+// L 形拐角（2x2 里恰好 3 个线像素）切对角：删掉拐角那个，剩下的一对走斜线。
+// 只在「删了不会断开连接」时才切 —— 否则线会被切成碎段（实测不加保护会从 41 段炸到 215 段）。
+const NB8 = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+
+function nbConnected(m, w, h, y, x) {
+  const alive = [];
+  for (let k = 0; k < 8; k++) {
+    const yy = y + NB8[k][0], xx = x + NB8[k][1];
+    if (yy >= 0 && yy < h && xx >= 0 && xx < w && m[yy * w + xx]) alive.push([yy, xx]);
+  }
+  if (alive.length <= 1) return true;
+  const key = (p) => p[0] * w + p[1];
+  const set = new Set(alive.map(key));
+  const seen = new Set([key(alive[0])]);
+  const stack = [alive[0]];
+  while (stack.length) {
+    const [cy, cx] = stack.pop();
+    for (let k = 0; k < 8; k++) {
+      const yy = cy + NB8[k][0], xx = cx + NB8[k][1];
+      const kk = yy * w + xx;
+      if (set.has(kk) && !seen.has(kk)) { seen.add(kk); stack.push([yy, xx]); }
+    }
+  }
+  return seen.size === alive.length;
+}
+
+// ---------- 线稿分段：把线按 8 连通切成对象 ----------
+// 每段可以在 UI 里单独设「用固定色」还是「跟随投影」。
+function labelLines(mask, w, h) {
+  const lab = new Int32Array(w * h).fill(-1);
+  const stack = [];
+  let id = 0;
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i] || lab[i] >= 0) continue;
+    stack.length = 0;
+    stack.push(i);
+    lab[i] = id;
+    while (stack.length) {
+      const p = stack.pop();
+      const y = (p / w) | 0, x = p % w;
+      for (let k = 0; k < 8; k++) {
+        const yy = y + NB8[k][0], xx = x + NB8[k][1];
+        if (yy < 0 || yy >= h || xx < 0 || xx >= w) continue;
+        const q = yy * w + xx;
+        if (mask[q] && lab[q] < 0) { lab[q] = id; stack.push(q); }
+      }
+    }
+    id++;
+  }
+  return { lab, count: id };
+}
+
+function cutCorners(mask, w, h, maxPass) {
+  const m = Uint8Array.from(mask);
+  for (let pass = 0; pass < (maxPass || 6); pass++) {
+    const cand = [];
+    for (let y = 0; y < h - 1; y++) {
+      for (let x = 0; x < w - 1; x++) {
+        const a = m[y*w+x], b = m[y*w+x+1], c = m[(y+1)*w+x], d = m[(y+1)*w+x+1];
+        if (a + b + c + d !== 3) continue;
+        if (!d) cand.push([y, x]);
+        else if (!c) cand.push([y, x + 1]);
+        else if (!b) cand.push([y + 1, x]);
+        else cand.push([y + 1, x + 1]);
+      }
+    }
+    let changed = false;
+    for (let k = 0; k < cand.length; k++) {
+      const [y, x] = cand[k];
+      if (!m[y * w + x]) continue;
+      if (nbConnected(m, w, h, y, x)) { m[y * w + x] = 0; changed = true; }
+    }
+    if (!changed) break;
+  }
+  return m;
+}
+
+function cleanLineMask(mask, w, h) {
+  // 全量骨架化 + 切角：粗块也一起收成 1px 线，否则「宽度 ≥3 的阶梯」会原样保留，
+  // 看起来还是有直角。想保留粗块就把「线稿清理」关掉。
+  return cutCorners(thinMask(mask, w, h, 60), w, h, 8);
+}
+
 function lineRespMap(orig, tw, th) {
   // key 必须区分「不同的图」：只按尺寸会让换图后复用上一张的线稿
   const key = [(orig.__rev || 0), orig.width, orig.height, tw, th].join('|');
@@ -1040,10 +1181,31 @@ function lineRespMap(orig, tw, th) {
       M[y * ow + x] = m;
     }
   }
+  // 反相：min 滤波得到「周围最暗」，用来抓比周围亮的线（高光描边）
+  const tmpN = new Float32Array(np0), Mn = new Float32Array(np0);
+  for (let y = 0; y < oh; y++) {
+    const row = y * ow;
+    for (let x = 0; x < ow; x++) {
+      let m = 999;
+      const a = Math.max(0, x - R), b = Math.min(ow - 1, x + R);
+      for (let k = a; k <= b; k++) if (L[row + k] < m) m = L[row + k];
+      tmpN[row + x] = m;
+    }
+  }
+  for (let x = 0; x < ow; x++) {
+    for (let y = 0; y < oh; y++) {
+      let m = 999;
+      const a = Math.max(0, y - R), b = Math.min(oh - 1, y + R);
+      for (let k = a; k <= b; k++) { const v = tmpN[k * ow + x]; if (v < m) m = v; }
+      Mn[y * ow + x] = m;
+    }
+  }
   // 每格取「最强响应」的样本（线色也一并带回来）
   const n = tw * th;
   const resp = new Float32Array(n);
+  const respLight = new Float32Array(n);
   const rgb = new Float32Array(n * 3);
+  const rgbLight = new Float32Array(n * 3);
   const minL = new Float32Array(n).fill(999);
   const minRGB = new Float32Array(n * 3);
   const fx = ow / tw, fy = oh / th;
@@ -1058,13 +1220,18 @@ function lineRespMap(orig, tw, th) {
         resp[t] = r;
         rgb[t * 3] = data[o]; rgb[t * 3 + 1] = data[o + 1]; rgb[t * 3 + 2] = data[o + 2];
       }
+      const rl = L[i] - Mn[i];
+      if (rl > respLight[t]) {
+        respLight[t] = rl;
+        rgbLight[t * 3] = data[o]; rgbLight[t * 3 + 1] = data[o + 1]; rgbLight[t * 3 + 2] = data[o + 2];
+      }
       if (L[i] < minL[t]) {
         minL[t] = L[i];
         minRGB[t * 3] = data[o]; minRGB[t * 3 + 1] = data[o + 1]; minRGB[t * 3 + 2] = data[o + 2];
       }
     }
   }
-  const out = { resp, rgb, minL, minRGB, tw, th };
+  const out = { resp, rgb, respLight, rgbLight, minL, minRGB, tw, th };
   if (LINE_CACHE.size > 3) LINE_CACHE.clear();
   LINE_CACHE.set(key, out);
   return out;
@@ -1176,6 +1343,7 @@ function projectionDither(img, palette, D, opts) {
   const only = (opts.onlyBand === undefined || opts.onlyBand === null) ? -1 : opts.onlyBand;
   const doFinal = (opts.stage || 'final') !== 'projection';
   const mixK = Math.min(4, Math.max(2, opts.mixColors ?? 4));
+  let lineGroups = null, lineSlotMap = null;   // 线稿分段结果（供返回时报告段数）
   // 自动路径的默认阈值矩阵：必须来自面板参数，不能写死 bayer，
   // 否则「矩阵阶数 2×2」这类设置对成品图完全没有影响。
   const defaultMatrix = DITHER_MATRICES[opts.matrix] ? opts.matrix : 'bayer4';
@@ -1353,13 +1521,39 @@ function projectionDither(img, palette, D, opts) {
     const dark = opts.lineMode === 'dark';       // 整片暗部（风格化），不是细线
     const thr = opts.lineThresh ?? 35;
     const mix = Math.max(0, Math.min(1, opts.lineMix ?? 0));   // 0=纯线色 1=完全不留
-    const hit = (p) => dark ? (lm.minL[p] < thr) : (lm.resp[p] >= thr);
+    let cleanMask = null;
+    if (opts.lineClean) {
+      const raw = new Uint8Array(npix);
+      for (let p = 0; p < npix; p++) {
+        raw[p] = (dark ? (lm.minL[p] < thr) : (lm.resp[p] >= thr)) ? 1 : 0;
+      }
+      cleanMask = cleanLineMask(raw, width, height);
+    }
+    const light = opts.lineDir === 'light';          // 反相：抓比周围亮的线
+    const RESPMAP = light ? lm.respLight : lm.resp;
+    const RGBMAP = light ? lm.rgbLight : lm.rgb;
+    const hit = (p) => cleanMask ? !!cleanMask[p]
+      : (dark ? (lm.minL[p] < thr) : (RESPMAP[p] >= thr));
     const colOf = (p) => dark
       ? [lm.minRGB[p * 3], lm.minRGB[p * 3 + 1], lm.minRGB[p * 3 + 2]]
-      : [lm.rgb[p * 3], lm.rgb[p * 3 + 1], lm.rgb[p * 3 + 2]];
-    const darkL = opts.lineDarkL ?? 50;
+      : [RGBMAP[p * 3], RGBMAP[p * 3 + 1], RGBMAP[p * 3 + 2]];
+    // 分段：每段可以被单独指定「固定色 / 跟随投影」
+    const builtMask = cleanMask || (() => {
+      const m = new Uint8Array(npix);
+      for (let p = 0; p < npix; p++) {
+        m[p] = (dark ? (lm.minL[p] < thr) : (RESPMAP[p] >= thr)) ? 1 : 0;
+      }
+      return m;
+    })();
+    lineGroups = labelLines(builtMask, width, height);
+    const lineSlots = opts.lineSlots || null;
+    lineSlotMap = lineSlots;
+    const darkL = opts.lineDarkL ?? 55;
+    // 暗线：线色只能取「比阈值暗」的板内色；亮线：只能取「比阈值亮」的
     const cand = [];
-    for (let i = 0; i < palette.length; i++) if (D.labL[i] < darkL) cand.push(i);
+    for (let i = 0; i < palette.length; i++) {
+      if (light ? (D.labL[i] > darkL) : (D.labL[i] < darkL)) cand.push(i);
+    }
     const use = cand.length ? cand : palette.map((_, i) => i);
     for (let p = 0; p < npix; p++) {
       if (!hit(p)) continue;
@@ -1377,11 +1571,14 @@ function projectionDither(img, palette, D, opts) {
         const d = (P[0] - tgt[0]) ** 2 + (P[1] - tgt[1]) ** 2 + (P[2] - tgt[2]) ** 2;
         if (d < bd) { bd = d; bi = ci; }
       }
-      const c = palette[bi] || [0, 0, 0];
+      let c = palette[bi] || [0, 0, 0];
+      const gid = lineGroups.lab[p];
+      const sv = (lineSlotMap && lineSlotMap[gid]) || (lineSlotMap && lineSlotMap.__all) || null;
+      if (sv && sv.mode === 'fixed' && palette[sv.color]) c = palette[sv.color];
       out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2];
     }
   }
-  return { width, height, data: out };
+  return { width, height, data: out, lineCount: lineGroups ? lineGroups.count : 0 };
 }
 
 // 统一入口
