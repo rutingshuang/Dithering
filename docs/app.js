@@ -921,7 +921,11 @@ function paintCanvas() {
   const cv = $('dstCanvas');
   if (!cv) return;
   const im = viewImage();
-  if (im && im.lineLab) ED.lineLab = im.lineLab;
+  if (im && im.lineLab) {
+    ED.lineLab = im.lineLab;
+    const cl0 = $('cursorLayer');
+    if (cl0) drawLineSel(cl0.getContext('2d'), cl0, cv);
+  }
   if ($('lineInfo') && im && im.lineCount !== undefined) {
     const sel = ED.lineSelGid;
     $('lineInfo').textContent = '线 ' + im.lineCount + ' 段'
@@ -1102,11 +1106,30 @@ function canvasPos(cv, ev) {
 
 // 光标直接画出「这一笔会涂到哪些像素」的硬边格子（和 brushStamp 的判定一致），
 // 不是画一个圆：圆和真实落点对不上，边缘像素到底涂没涂看不出来。
+// 选中的线段描一层青色，画在 overlay 上（不进导出）
+function drawLineSel(g, cl, cv) {
+  const lab = ED.lineLab;
+  if (!lab || ED.lineSelGid < 0 || !cv) return;
+  const w = cv.width, scale = cl.width / w;
+  const cell = Math.max(1, scale);
+  const gid = ED.lineSelGid;
+  g.fillStyle = 'rgba(0, 230, 255, .40)';
+  g.strokeStyle = 'rgba(0, 230, 255, .95)';
+  g.lineWidth = 1;
+  for (let i = 0; i < lab.length; i++) {
+    if (lab[i] !== gid) continue;
+    const gx = (i % w) * scale, gy = ((i / w) | 0) * scale;
+    g.fillRect(gx, gy, cell, cell);
+    g.strokeRect(gx + 0.5, gy + 0.5, Math.max(1, cell - 1), Math.max(1, cell - 1));
+  }
+}
+
 function drawCursor(x, y) {
   const cl = $('cursorLayer'), cv = $('dstCanvas');
   if (!cl || !cv || ED.painting) return;    // 拖动中保留笔迹，别清屏
   const g = cl.getContext('2d');
   g.clearRect(0, 0, cl.width, cl.height);
+  drawLineSel(g, cl, cv);
   if (x === undefined) return;
   const scale = cl.width / cv.width;
   const cell = Math.max(1, scale);
