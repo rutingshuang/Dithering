@@ -1579,7 +1579,10 @@ function projectionDither(img, palette, D, opts) {
       out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2];
     }
   }
-  return { width, height, data: out, lineCount: lineGroups ? lineGroups.count : 0 };
+  // lineLab 给上层做「点一下选中某一段」用
+  return { width, height, data: out,
+           lineCount: lineGroups ? lineGroups.count : 0,
+           lineLab: lineGroups ? lineGroups.lab : null };
 }
 
 // 统一入口

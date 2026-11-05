@@ -136,7 +136,9 @@ const ED = {
   labelSlots: {},    // uid -> 槽
   uidSeq: 1,
   lineSlots: {},       // 段 id -> { mode, color }
-  linePick: false,     // 下一次点画布 = 给线稿选固定色
+  linePick: false,     // 下一次点画布 = 选中某段线并给它定色
+  lineLab: null,       // 每像素属于第几段（-1 = 非线）
+  lineSelGid: -1,      // 当前选中的段
   edgesManual: false,  // 分界是否被手动拖过（调色阶时按比例保留，而不是重置）
   curBand: 0,
   curSlotUid: -1,
@@ -919,8 +921,11 @@ function paintCanvas() {
   const cv = $('dstCanvas');
   if (!cv) return;
   const im = viewImage();
+  if (im && im.lineLab) ED.lineLab = im.lineLab;
   if ($('lineInfo') && im && im.lineCount !== undefined) {
-    $('lineInfo').textContent = '线 ' + im.lineCount + ' 段';
+    const sel = ED.lineSelGid;
+    $('lineInfo').textContent = '线 ' + im.lineCount + ' 段'
+      + (sel !== undefined && sel >= 0 ? ' · 选中第 ' + (sel + 1) + ' 段' : '');
   }
   if (!im) {
     if ($('stageHint')) $('stageHint').textContent = srcData ? '点「处理」出图' : '先选择一张图片';
@@ -1161,7 +1166,7 @@ function bindPaint() {
     if (ev.button !== 0) return;      // 只有左键才画笔；中键留给平移
     if (!ED.editing || ED.view === 'result') return;
     if (!ED.plan) return;
-    // 线稿取固定色：点一下画面即取该像素的板内色
+    // 线稿对象：点画面上的线段 = 选中这一段，并把它的颜色定成这里取到的色
     if (ED.linePick) {
       ev.preventDefault();
       const [lx, ly] = canvasPos(cv, ev);
@@ -1169,11 +1174,18 @@ function bindPaint() {
       if (imx && lx >= 0 && ly >= 0 && lx < imx.width && ly < imx.height) {
         const oo = (ly * imx.width + lx) * 4;
         const ci = nearestRGBIdx([imx.data[oo], imx.data[oo + 1], imx.data[oo + 2]], palette);
-        ED.lineSlots = { __all: { mode: 'fixed', color: ci } };
+        const gid = ED.lineLab ? ED.lineLab[ly * imx.width + lx] : -1;
+        if (gid < 0) {
+          flashHint('这里没有线段：请点在线上，或切「跟随投影」改成整体');
+          ED.linePick = false;
+          return;
+        }
+        ED.lineSlots[gid] = { mode: 'fixed', color: ci };
+        ED.lineSelGid = gid;
         if ($('projLineMode')) $('projLineMode').value = 'fixed';
         ED.linePick = false;
         bumpRev(); paintCanvas();
-        flashHint('线稿固定色已设为 #' + ci);
+        flashHint('第 ' + (gid + 1) + ' 段已固定为板内色 #' + ci);
       }
       return;
     }
@@ -1783,6 +1795,7 @@ onEl('projLineDir', 'change', () => { bumpRev(); paintCanvas(); });
 onEl('projLineMode', 'change', () => {
   const mode = $('projLineMode').value;
   ED.lineSlots = {};
+  ED.lineSelGid = -1;
   if (mode === 'fixed') {
     const first = [...selected][0];
     ED.lineSlots.__all = { mode: 'fixed', color: (first === undefined ? 0 : first) };
@@ -1791,7 +1804,7 @@ onEl('projLineMode', 'change', () => {
 });
 onEl('linePickFixed', 'click', () => {
   ED.linePick = true;
-  flashHint('点画面上的任意颜色，作为线稿的固定色');
+  flashHint('点画面上的某条线：选中那一段并取它的颜色');
 });
 onEl('projLineL', 'input', () => {
   if ($('projLineLVal')) $('projLineLVal').textContent = $('projLineL').value;
