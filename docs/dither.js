@@ -1522,7 +1522,8 @@ function projectionDither(img, palette, D, opts) {
     const thr = opts.lineThresh ?? 35;
     const mix = Math.max(0, Math.min(1, opts.lineMix ?? 0));   // 0=纯线色 1=完全不留
     let cleanMask = null;
-    if (opts.lineClean) {
+    // 「整片暗部」是风格化的整块纯色，骨架化会把它收成细线，效果很糟 —— 该模式不做清理
+    if (opts.lineClean && !dark) {
       const raw = new Uint8Array(npix);
       for (let p = 0; p < npix; p++) {
         raw[p] = (dark ? (lm.minL[p] < thr) : (lm.resp[p] >= thr)) ? 1 : 0;

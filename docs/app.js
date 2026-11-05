@@ -77,7 +77,9 @@ function gatherOpts() {
       matrix: $('projMatrix').value || 'bayer4',
       ...(() => {
         const L = LINE_LEVELS[+($('projLineKeep') || {}).value || 0] || LINE_LEVELS[0];
-        const clean = +($('projLineClean') || {}).value !== 0;
+        // 整片暗部（档位 4）不做清理，同时对上层也报告为关
+        const clean = (L.keep > 0 && L.mode !== 'dark')
+          && (+($('projLineClean') || {}).value !== 0);
         const darkL = +($('projLineL') || {}).value || 55;
         const dir = ($('projLineDir') || {}).value || 'dark';
         return { lineKeep: L.keep, lineMode: L.mode, lineThresh: L.thresh,
@@ -751,6 +753,7 @@ function refreshLockState() {
   if ($('projMatrixSize')) $('projMatrixSize').disabled = locked;
   if ($('projLineKeep')) $('projLineKeep').disabled = locked;
   if ($('projLineClean')) $('projLineClean').disabled = locked;
+  try { syncLineCleanDisabled(); } catch (e) {}
   if ($('projLineDir')) $('projLineDir').disabled = locked;
   if ($('projLineL')) $('projLineL').disabled = locked;
   if ($('lockBadge')) {
@@ -1761,7 +1764,20 @@ function paramDebounced() {
 onEl('projMatrixSize', 'change', () => { fillMatrixSelect($('projMatrix'), $('projMatrixSize').value); onParamChange(); });
 onEl('projMatrix', 'change', onParamChange);
 // 线稿保护只作用在渲染末尾（不改 plan、不改手绘归属），重画即可
-onEl('projLineKeep', 'change', () => { bumpRev(); paintCanvas(); });
+onEl('projLineKeep', 'change', () => {
+  syncLineCleanDisabled();
+  bumpRev(); paintCanvas();
+});
+
+// 整片暗部模式下「清理」无效，直接把控件禁用，别让人以为能开
+function syncLineCleanDisabled() {
+  const keep = $('projLineKeep');
+  const clean = $('projLineClean');
+  if (!keep || !clean) return;
+  const isDark = keep.value === '4';
+  clean.disabled = isDark || layersLocked();
+  clean.title = isDark ? '整片暗部模式不做清理' : '';
+}
 onEl('projLineClean', 'change', () => { bumpRev(); paintCanvas(); });
 onEl('projLineDir', 'change', () => { bumpRev(); paintCanvas(); });
 onEl('projLineMode', 'change', () => {
