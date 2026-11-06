@@ -104,18 +104,6 @@ except Exception as e:
         return image.convert('RGB')
 
 
-# 双读抖动引擎（dualview_dither.py）：一张图，远看是主图、近看是隐藏图
-try:
-    import dualview_dither as dvd
-
-    DUALVIEW_AVAILABLE = True
-    print("Loaded dualview_dither.py")
-except Exception as e:
-    dvd = None
-    DUALVIEW_AVAILABLE = False
-    print("Could not import dualview_dither.py:", e)
-
-
 # 分层预设：界面名 → 生成函数(n_bands, colors_per_band)
 def _layer_presets():
     if not LAYERED_AVAILABLE:
@@ -123,15 +111,12 @@ def _layer_presets():
     return {
         '标准（投影混色·落盘内）': lambda n_bands, colors_per_band=8:
             ldl.make_projection_profile(n_bands=n_bands, colors_per_band=colors_per_band),
-        '参考图风格（每层2色·圆点网点）': lambda n_bands, colors_per_band=2:
-            ldl.make_reference_profile(n_bands=n_bands, colors_per_band=colors_per_band),
     }
 
 
 # 选预设时联动这些参数：每层色数、网点图案、阶数
 LAYER_PRESET_DEFAULTS = {
-    '标准（投影混色·落盘内）': (8, 'bayer', 16),
-    '参考图风格（每层2色·圆点网点）': (2, 'rounddot', 8),
+    '标准（投影混色·落盘内）': (8, 'bayer', 4),
 }
 
 
@@ -144,18 +129,11 @@ LAYER_EDGE_MODES = {
 }
 LAYER_SPACES = ['Lab', 'RGB']
 LAYER_SIZES = [
-    (2,  '2×2（4 级阈值 · 色差 +77%，风格取舍）'),
-    (4,  '4×4（16 级 · 性价比最高）'),
-    (8,  '8×8（64 级）'),
-    (16, '16×16（256 级）'),
-    (32, '32×32（1024 级 · 无额外收益）'),
+    (2, '2×2（4 级阈值 · 色差 +77%，风格取舍）'),
+    (4, '4×4（16 级 · 性价比最高，上限）'),
 ]
 LAYER_MIX_MODES = ['4 色（重心混合，无损）', '3 色（三角形）', '2 色（线段）']
 LAYER_MIX_VALUES = [4, 3, 2]
-
-# 双读抖动的四个预览视角
-DUAL_VIEWS = ('原始 A', '隐藏图 B', '合成·远看 → A', '合成·近看 1:1 → B')
-DUAL_CROP = 720   # 「近看 1:1」视图裁多大的中心方块
 
 
 # Utility: read palette file
@@ -358,372 +336,6 @@ def pil_to_pixmap(im, max_w=420):
     return QPixmap.fromImage(qim.copy())
 
 
-class LayerPreviewDialog(QDialog):
-    """单层预览：左原色、右抖动结果，都只显示该层像素，其余透明。"""
-
-    def __init__(self, src_img, out_img, title='', parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f'层预览 — {title}')
-        self.resize(900, 500)
-        canvas = QLabel()
-        canvas.setAlignment(Qt.AlignCenter)
-        canvas.setStyleSheet('background: #2b2b2b;')
-        tile = QPixmap(canvas.size())
-        grid = QGridLayout()
-        for col, (name, im) in enumerate((('原色（该层）', src_img), ('抖动（该层）', out_img))):
-            lbl = QLabel(name)
-            lbl.setAlignment(Qt.AlignCenter)
-            pic = QLabel()
-            pic.setAlignment(Qt.AlignCenter)
-            pic.setPixmap(pil_to_pixmap(im))
-            pic.setStyleSheet('background: #2b2b2b;')
-            grid.addWidget(lbl, 0, col)
-            grid.addWidget(pic, 1, col)
-        btns = QDialogButtonBox(QDialogButtonBox.Close)
-        btns.rejected.connect(self.reject)
-        btns.accepted.connect(self.accept)
-        lay = QVBoxLayout(self)
-        lay.addLayout(grid)
-        lay.addWidget(btns)
-
-
-class LayerColorDialog(QDialog):
-    """单层颜色槽编辑：增删颜色、改色号、每个颜色单独选还原方式。
-
-    这是「自动投影」与「手工指定」之间的开关：
-      - 没有颜色槽 → 回到自动（k-means 聚投影色 + 凸包混合）
-      - 有颜色槽   → 跳过 k-means，层内像素归到最近的颜色槽，各槽按自己的方式还原
-    """
-
-    COLS = ['色号', '颜色', '还原方式', '强度', '删除']
-
-    def __init__(self, band, palette, auto_colors=None, pixels=0, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f'层颜色（该层 {pixels} 像素）')
-        self.resize(640, 480)
-        self.band = band
-        self.palette = list(palette)
-        self.auto_colors = auto_colors or []
-        self.rows = []
-        for c in (band.colors or []):
-            if isinstance(c, dict):
-                self.rows.append({'color': c.get('color', 0),
-                                  'method': c.get('method', 'mix'),
-                                  'strength': int(c.get('strength', 64))})
-            else:
-                self.rows.append({'color': c, 'method': 'mix', 'strength': 64})
-
-        hint = QLabel(
-            '没有颜色槽 = 回到自动投影；加了槽就跳过 k-means，层内像素按最近色归到各个槽。\n'
-            '「重心混合」会用该色周围的调色板色把它混出来（色号本身在板内时退化为平涂）。\n'
-            '「误差扩散」只能在层内像素的扫描序上传误差——同一层的像素在画面上是分散的，'
-            '所以比整图误差扩散弱，容易结成条带。')
-        hint.setWordWrap(True)
-
-        self.table = QTableWidget(0, len(self.COLS))
-        self.table.setHorizontalHeaderLabels(self.COLS)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setSelectionMode(QAbstractItemView.NoSelection)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-
-        btn_add = QPushButton('添加颜色')
-        btn_add.clicked.connect(self._add_row)
-        btn_import = QPushButton('导入自动结果')
-        btn_import.setToolTip('把该层自动聚出的投影色配方导进来作为编辑起点')
-        btn_import.clicked.connect(self._import_auto)
-        btn_clear = QPushButton('清空（回到自动）')
-        btn_clear.clicked.connect(self._clear)
-        self.lbl_summary = QLabel()
-        top = QHBoxLayout()
-        top.addWidget(btn_add)
-        top.addWidget(btn_import)
-        top.addWidget(btn_clear)
-        top.addStretch(1)
-        top.addWidget(self.lbl_summary)
-
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-
-        lay = QVBoxLayout(self)
-        lay.addWidget(hint)
-        lay.addLayout(top)
-        lay.addWidget(self.table)
-        lay.addWidget(btns)
-
-        self._rebuild()
-
-    def _rebuild(self):
-        self.table.setRowCount(len(self.rows))
-        self._spins, self._combos, self._strengths = [], [], []
-        for i, r in enumerate(self.rows):
-            spin = QSpinBox()
-            spin.setRange(0, len(self.palette) - 1)
-            spin.setValue(int(r['color']) if isinstance(r['color'], int) else 0)
-            spin.valueChanged.connect(lambda _v, i=i: self._refresh_swatch(i))
-            self.table.setCellWidget(i, 0, spin)
-            self._spins.append(spin)
-
-            self.table.setItem(i, 1, QTableWidgetItem(''))
-            combo = QComboBox()
-            combo.addItems([SLOT_METHOD_LABEL[m] for m in SLOT_METHODS])
-            combo.setCurrentText(SLOT_METHOD_LABEL.get(r['method'], '重心混合'))
-            self.table.setCellWidget(i, 2, combo)
-            self._combos.append(combo)
-
-            st = QSpinBox()
-            st.setRange(0, 128)
-            st.setValue(int(r['strength']))
-            st.setToolTip('有序抖动/误差扩散的扰动强度')
-            self.table.setCellWidget(i, 3, st)
-            self._strengths.append(st)
-
-            btn = QPushButton('删除')
-            btn.clicked.connect(lambda _c, i=i: self._del_row(i))
-            self.table.setCellWidget(i, 4, btn)
-            self._refresh_swatch(i)
-        self.table.resizeColumnsToContents()
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.lbl_summary.setText(f'{len(self.rows)} 个槽' if self.rows else '当前：自动投影')
-
-    def _refresh_swatch(self, i):
-        idx = int(self._spins[i].value())
-        c = self.palette[idx]
-        item = self.table.item(i, 1)
-        if item is None:                    # 已有 item 不能再 setItem，会触发 owned 警告
-            item = QTableWidgetItem('')
-            self.table.setItem(i, 1, item)
-        item.setText(f'#{int(c[0]):02X}{int(c[1]):02X}{int(c[2]):02X}')
-        item.setBackground(QtGui.QBrush(QtGui.QColor(int(c[0]), int(c[1]), int(c[2]))))
-        item.setForeground(QtGui.QBrush(QtCore.Qt.white if sum(c) < 380 else QtCore.Qt.black))
-
-    def _add_row(self):
-        self.rows.append({'color': 0, 'method': 'mix', 'strength': 64})
-        self._rebuild()
-
-    def _del_row(self, i):
-        if 0 <= i < len(self.rows):
-            self.rows.pop(i)
-            self._rebuild()
-
-    def _import_auto(self):
-        n = 0
-        for c in self.auto_colors:
-            rec = c.get('recipe') or []
-            if rec:
-                self.rows.append({'color': int(rec[0]['index']), 'method': 'mix', 'strength': 64})
-                n += 1
-        if n == 0:
-            QMessageBox.information(self, '没有自动结果',
-                                    '该层没有可导入的自动投影色（可能是空层，或已设为平涂）。')
-        self._rebuild()
-
-    def _clear(self):
-        self.rows = []
-        self._rebuild()
-
-    def result_slots(self):
-        return [{'color': int(self._spins[i].value()),
-                 'method': SLOT_METHODS[max(0, self._combos[i].currentIndex())],
-                 'strength': int(self._strengths[i].value())}
-                for i in range(len(self.rows))]
-
-
-class LayerTableDialog(QDialog):
-    """分层参数表：一行 = 一个明度层 = Krita 里的一个图层。
-
-    手工工作流里，作者要为每个图层分别调"抖动图案/图案大小"；
-    这张表就是那几次调参的等价物，改完直接复用、可存成预设。
-    """
-
-    COLS = ['层', '明度范围', '像素占比', '图案', '阶数', '放大', '颜色', '预览', '启用']
-
-    def __init__(self, profile, ratios=None, parent=None,
-                 palette=None, image=None, preview_cb=None):
-        super().__init__(parent)
-        self.setWindowTitle('分层参数表（每行 = 一个明度层）')
-        self.resize(900, 640)
-        self.profile = profile
-        self.ratios = ratios
-        self.palette = palette
-        self.image = image
-        self.preview_cb = preview_cb
-
-        bands = profile.bands
-        n = len(bands)
-        table = QTableWidget(n, len(self.COLS))
-        table.setHorizontalHeaderLabels(self.COLS)
-        table.verticalHeader().setVisible(False)
-        table.setSelectionMode(QAbstractItemView.NoSelection)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-
-        self.pattern_boxes = []
-        self.size_boxes = []
-        self.cell_boxes = []
-        self.enable_boxes = []
-        self.color_btns = []
-
-        for i, b in enumerate(bands):
-            lo, hi = b.wide()
-            table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
-            table.setItem(i, 1, QTableWidgetItem(f'L* {lo * 100:.1f} ~ {hi * 100:.1f}'))
-            if ratios is not None and i < len(ratios):
-                table.setItem(i, 2, QTableWidgetItem(f'{ratios[i] * 100:.2f}%'))
-            else:
-                table.setItem(i, 2, QTableWidgetItem('-'))
-
-            cb = QComboBox()
-            cb.addItems(LAYER_PATTERNS)
-            cb.setCurrentText(b.pattern if b.pattern in LAYER_PATTERNS else 'bayer')
-            cb.setToolTip('该层的抖动图案；clustered 容易聚成方块色团，一般用 bayer / bluenoise')
-            table.setCellWidget(i, 3, cb)
-            self.pattern_boxes.append(cb)
-
-            sp_size = QSpinBox()
-            sp_size.setRange(2, 64)
-            sp_size.setValue(int(b.size))
-            sp_size.setToolTip('图案阶数：越大网点越细密')
-            table.setCellWidget(i, 4, sp_size)
-            self.size_boxes.append(sp_size)
-
-            sp_cell = QSpinBox()
-            sp_cell.setRange(1, 16)
-            sp_cell.setValue(int(b.cell))
-            sp_cell.setToolTip('每个图案单元放大到几像素（越大图案越粗）')
-            table.setCellWidget(i, 5, sp_cell)
-            self.cell_boxes.append(sp_cell)
-
-            btn_col = QPushButton('自动' if not b.colors else f'手动 {len(b.colors)}')
-            btn_col.setToolTip('点开编辑该层用哪些颜色、每个颜色用哪种还原方式；改完重新投影')
-            btn_col.clicked.connect(lambda _c, i=i: self._open_colors(i))
-            table.setCellWidget(i, 6, btn_col)
-            self.color_btns.append(btn_col)
-
-            btn_prev = QPushButton('查看')
-            btn_prev.setToolTip('只显示这一层的像素：左边原色、右边抖动结果')
-            btn_prev.clicked.connect(lambda _c, i=i: self._open_preview(i))
-            table.setCellWidget(i, 7, btn_prev)
-
-            chk = QCheckBox()
-            chk.setChecked(b.enabled)
-            chk.setToolTip('取消勾选 = 该层不参与抖动')
-            table.setCellWidget(i, 8, chk)
-            self.enable_boxes.append(chk)
-
-        table.resizeColumnsToContents()
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-
-        hint = QLabel('提示：所有层的图案共用同一坐标原点，层与层之间纹路不会错位。\n'
-                      '抖动比例由"投影色"决定，不在这里调；这里控制的是每一层纹理的样式与粗细。')
-        hint.setWordWrap(True)
-
-        lay = QVBoxLayout(self)
-        lay.addWidget(hint)
-        lay.addWidget(table)
-        lay.addWidget(btns)
-
-    def _sync_to_profile(self):
-        """把表格里的控件值写回 profile（预览前也要同步，否则看的还是旧参数）。"""
-        for i, b in enumerate(self.profile.bands):
-            b.pattern = self.pattern_boxes[i].currentText()
-            b.size = int(self.size_boxes[i].value())
-            b.cell = int(self.cell_boxes[i].value())
-
-    def _open_colors(self, i):
-        if ldl is None or self.palette is None:
-            QMessageBox.information(self, '不可用', '分层引擎或调色板不可用（请先载入图片/调色板）。')
-            return
-        band = self.profile.bands[i]
-        auto, pixels = [], 0
-        if self.image is not None:
-            try:
-                self._sync_to_profile()
-                info = ldl.analyze_bands(self.image, self.palette, self.profile, only=i)
-                if info:
-                    auto = info[0]['colors']
-                    pixels = info[0]['pixels']
-            except Exception as e:
-                print('analyze_bands failed:', e)
-        dlg = LayerColorDialog(band, self.palette, auto, pixels, self)
-        if dlg.exec_() == QDialog.Accepted:
-            slots = dlg.result_slots()
-            band.colors = slots or None
-            self.color_btns[i].setText('自动' if not slots else f'手动 {len(slots)}')
-
-    def _open_preview(self, i):
-        if self.preview_cb is None:
-            QMessageBox.information(self, '不可用', '需要先在主界面载入图片。')
-            return
-        self._sync_to_profile()
-        try:
-            src, out = self.preview_cb(i)
-        except Exception as e:
-            QMessageBox.warning(self, '预览失败', f'单层预览失败: {e}')
-            return
-        LayerPreviewDialog(src, out, f'第 {i + 1} 层', self).exec_()
-
-    def apply_to_profile(self):
-        """把表格里的值写回 profile.bands。"""
-        self._sync_to_profile()
-        for i, b in enumerate(self.profile.bands):
-            b.enabled = self.enable_boxes[i].isChecked()
-
-    def accept(self):
-        self.apply_to_profile()
-        super().accept()
-
-
-class DualViewDialog(QDialog):
-    """双读抖动的双视角对照：左边近看（B），右边远看（A）。
-
-    收 QPixmap 而不是 PIL Image —— 复用主窗口那套已处理过行对齐的转换。
-    """
-
-    def __init__(self, near_pix, far_pix, profile, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle('双视角预览 —— 近看是 B，远看是 A')
-        lay = QVBoxLayout(self)
-
-        row = QHBoxLayout()
-        pairs = (
-            ('近看（1:1 局部）→ B', near_pix, '把脸贴近屏幕，或把图放到 100% 看'),
-            ('远看（缩略图）→ A', far_pix, '退后几步 / 眯眼看 / 平台生成的缩略图'),
-        )
-        for title, pix, tip in pairs:
-            box = QVBoxLayout()
-            lab_title = QLabel(title)
-            lab_title.setStyleSheet('font-weight: bold;')
-            box.addWidget(lab_title)
-            holder = QLabel()
-            holder.setPixmap(pix)
-            holder.setAlignment(Qt.AlignCenter)
-            holder.setStyleSheet('background:#111;')
-            box.addWidget(holder)
-            lab_tip = QLabel(tip)
-            lab_tip.setStyleSheet('color:#888;')
-            lab_tip.setWordWrap(True)
-            box.addWidget(lab_tip)
-            row.addLayout(box)
-
-        lay.addLayout(row)
-        info = QLabel(
-            f'块尺寸 k={profile.k}，隐藏图 {profile.levels} 级，平移轴 {profile.axis}，'
-            f'色彩空间 {profile.match_space}。\n'
-            f'右边那格是把结果缩到 1/k 再放大 —— 一个块正好折成一个像素，'
-            f'所以它就是缩略图/退后看的严格等效。')
-        info.setWordWrap(True)
-        lay.addWidget(info)
-        btn = QDialogButtonBox(QDialogButtonBox.Close)
-        btn.rejected.connect(self.reject)
-        btn.accepted.connect(self.accept)
-        lay.addWidget(btn)
-
-
 class ImageDitherApp(QMainWindow):
     def __init__(self):
         # 修复 Qt5 bug：部分 CJK 区域（如 zh_HK）的系统默认 QLocale 会把数字格式化成
@@ -758,10 +370,6 @@ class ImageDitherApp(QMainWindow):
         # 分层抖动：手工编辑过的 Profile（None = 按预设曲线自动生成）
         self._layer_profile = None
         self._layer_profile_edited = False   # 区分"自动缓存"与"用户手改"，切换引擎时行为不同
-        # 双读抖动：隐藏图 B（PIL Image，None = 还没选）
-        self.dual_hidden_image = None
-        self._dual_view_cache = {}      # {'near':…, 'far':…} 由合成结果派生
-        self._dual_view_active = None
 
         self._build_ui()
 
@@ -858,8 +466,6 @@ class ImageDitherApp(QMainWindow):
         _methods = ['有序抖动', '误差扩散抖动', '重心混合']
         if LAYERED_AVAILABLE:
             _methods.append('分层抖动')
-        if DUALVIEW_AVAILABLE:
-            _methods.append('双读抖动')
         self.combo_dither.addItems(_methods)
         self.combo_dither.currentIndexChanged.connect(self.on_dither_method_change)
         method_layout.addWidget(self.combo_dither)
@@ -1049,7 +655,7 @@ class ImageDitherApp(QMainWindow):
         self.combo_layer_pattern.setToolTip(
             'bayer：阈值均匀交错，边缘锐利但纹理细碎；'
             'rounddot：圆形网点，聚集成点、画面干净（参考图风格）；'
-            '这里改会应用到所有层，要逐层微调用下面的「编辑分层参数表…」')
+            '这里改会应用到所有层；网页版分层编辑器可逐层单独设定')
         self.combo_layer_pattern.currentIndexChanged.connect(self._invalidate_layer_profile)
         ly.addWidget(self.combo_layer_pattern, 3, 1)
 
@@ -1057,7 +663,7 @@ class ImageDitherApp(QMainWindow):
         self.combo_layer_size = QComboBox()
         for _v, _label in LAYER_SIZES:
             self.combo_layer_size.addItem(_label, _v)
-        self.combo_layer_size.setCurrentIndex(3)          # 默认 16×16
+        self.combo_layer_size.setCurrentIndex(1)          # 默认 4×4
         self.combo_layer_size.setToolTip(
             '图案单元越小，抖动可用的阈值档位越少：2×2 只有 4 档，区域平均色必然偏'
             '（实测 ΔE 1.51，比 8×8 差 77%），加层数也补不回来。4×4 就基本够（0.865），'
@@ -1077,10 +683,6 @@ class ImageDitherApp(QMainWindow):
         ly.addWidget(self.combo_layer_mix, 4, 1)
 
         btn_row = QHBoxLayout()
-        self.btn_layer_edit = QPushButton('编辑分层参数表…')
-        self.btn_layer_edit.setToolTip('逐层调抖动图案/阶数/放大 —— 即手工逐层调参的界面')
-        self.btn_layer_edit.clicked.connect(self.on_edit_layers)
-        btn_row.addWidget(self.btn_layer_edit)
         self.btn_layer_load = QPushButton('载入预设…')
         self.btn_layer_load.clicked.connect(self.on_load_layer_profile)
         btn_row.addWidget(self.btn_layer_load)
@@ -1096,87 +698,6 @@ class ImageDitherApp(QMainWindow):
 
         dither_layout.addWidget(self.layered_params)
         self.layered_params.setVisible(False)
-
-        # ---- 双读抖动参数区域 ----
-        self.dual_params = QWidget()
-        dv = QGridLayout(self.dual_params)
-
-        dv.addWidget(QLabel('主图 A（远看）'), 0, 0)
-        self.btn_dual_main = QPushButton('选择主图…')
-        self.btn_dual_main.setToolTip('和左上角的选图是同一件事，放在这里是为了让 A / B 两个入口挨在一起')
-        self.btn_dual_main.clicked.connect(self.on_choose_dual_main)
-        dv.addWidget(self.btn_dual_main, 0, 1)
-        self.lbl_dual_main = QLabel('未选择')
-        self.lbl_dual_main.setStyleSheet('color: #888;')
-        self.lbl_dual_main.setWordWrap(True)
-        dv.addWidget(self.lbl_dual_main, 0, 2, 1, 2)
-
-        dv.addWidget(QLabel('隐藏图 B（近看）'), 1, 0)
-        self.btn_dual_hidden = QPushButton('选择隐藏图…')
-        self.btn_dual_hidden.setToolTip('近看时看到的那张图')
-        self.btn_dual_hidden.clicked.connect(self.on_choose_dual_hidden)
-        dv.addWidget(self.btn_dual_hidden, 1, 1)
-        self.lbl_dual_hidden = QLabel('未选择')
-        self.lbl_dual_hidden.setStyleSheet('color: #888;')
-        self.lbl_dual_hidden.setWordWrap(True)
-        dv.addWidget(self.lbl_dual_hidden, 1, 2, 1, 2)
-
-        dv.addWidget(QLabel('块尺寸 k'), 2, 0)
-        self.spin_dual_k = QSpinBox()
-        self.spin_dual_k.setRange(2, 32)
-        self.spin_dual_k.setValue(8)
-        self.spin_dual_k.setToolTip('块越大隐藏图越清楚，主图分辨率越低（= 输出边长 / k）\n'
-                                    'k=8 在 96PPI 屏上约 2.1mm，对应人眼分辨极限约 6 米')
-        self.spin_dual_k.valueChanged.connect(self._refresh_dual_state)
-        dv.addWidget(self.spin_dual_k, 2, 1)
-
-        dv.addWidget(QLabel('隐藏图级数'), 2, 2)
-        self.spin_dual_levels = QSpinBox()
-        self.spin_dual_levels.setRange(2, 8)
-        self.spin_dual_levels.setValue(2)
-        self.spin_dual_levels.setToolTip('隐藏图量化成几档明暗：2 档最清楚，档数越多层次越丰富但越难认')
-        dv.addWidget(self.spin_dual_levels, 2, 3)
-
-        dv.addWidget(QLabel('编码方式'), 3, 0)
-        self.combo_dual_mode = QComboBox()
-        self.combo_dual_mode.addItems(['方向交替（竖/横条纹）', '相位平移（左右）', '相位平移（上下）'])
-        self.combo_dual_mode.setToolTip(
-            '方向交替：低半段竖条纹、高半段横条纹。条纹方向不会被底图明暗改变，\n'
-            '所以插画、照片这类复杂底图也能读出 B。\n'
-            '相位平移：靠条纹位置偏移编码，只有底图是大色块、低对比时才读得出来。')
-        dv.addWidget(self.combo_dual_mode, 3, 1)
-
-        dv.addWidget(QLabel('色彩空间'), 3, 2)
-        self.combo_dual_space = QComboBox()
-        self.combo_dual_space.addItems(['RGB', 'Lab'])
-        self.combo_dual_space.setToolTip('RGB：块混合色与缩略图严格一致\nLab：按感知匹配，色差更小但缩略图会有微小偏移')
-        dv.addWidget(self.combo_dual_space, 3, 3)
-
-        dv.addWidget(QLabel('色对接近度'), 4, 0)
-        self.spin_dual_pair = QSpinBox()
-        self.spin_dual_pair.setRange(0, 100)
-        self.spin_dual_pair.setValue(50)
-        self.spin_dual_pair.setToolTip('越高越避免跨色相配对（如品红配绿），远看越干净；\n'
-                                       '0 = 只看混合精度，远看可能出现彩色噪点')
-        dv.addWidget(self.spin_dual_pair, 4, 1)
-
-        self.chk_dual_level = QCheckBox('隐藏图自动对比度')
-        self.chk_dual_level.setChecked(True)
-        self.chk_dual_level.setToolTip('先把隐藏图拉伸到全动态范围再量化，避免浅对比的图挤在一档里')
-        dv.addWidget(self.chk_dual_level, 4, 2, 1, 2)
-
-        self.btn_dual_view = QPushButton('双视角预览…（并排对照）')
-        self.btn_dual_view.setToolTip('出一次图，并给出「近看(1:1)」与「远看(缩略图)」并排对照')
-        self.btn_dual_view.clicked.connect(self.on_dual_preview)
-        dv.addWidget(self.btn_dual_view, 5, 0, 1, 4)
-
-        self.lbl_dual_state = QLabel('')
-        self.lbl_dual_state.setWordWrap(True)
-        self.lbl_dual_state.setStyleSheet('color: #888;')
-        dv.addWidget(self.lbl_dual_state, 6, 0, 1, 4)
-
-        dither_layout.addWidget(self.dual_params)
-        self.dual_params.setVisible(False)
 
         ctrl_layout.addWidget(dither_group)
 
@@ -1204,7 +725,7 @@ class ImageDitherApp(QMainWindow):
 
         ctrl_layout.addStretch()
 
-        # 左侧控制项很多（尤其双读抖动的参数面板），窗口不够高时会被压扁
+        # 左侧控制项很多（尤其分层抖动的参数面板），窗口不够高时会被压扁
         # 甚至挤到看不见 —— 放进滚动区，保证任何一项都能滚到
         ctrl_scroll = QScrollArea()
         ctrl_scroll.setWidgetResizable(True)
@@ -1217,22 +738,6 @@ class ImageDitherApp(QMainWindow):
         preview_layout = QVBoxLayout(preview_widget)
         preview_layout.setContentsMargins(6, 6, 6, 6)
         preview_layout.addWidget(QLabel('原图 / 处理后预览（单击切换）'))
-
-        # 双读模式专用：四个视角一键切换
-        self.dual_view_bar = QWidget()
-        vb = QHBoxLayout(self.dual_view_bar)
-        vb.setContentsMargins(0, 0, 0, 0)
-        vb.addWidget(QLabel('视角'))
-        self._dual_view_btns = []
-        for name in DUAL_VIEWS:
-            b = QPushButton(name)
-            b.setCheckable(True)
-            b.clicked.connect(partial(self.on_dual_view_select, name))
-            vb.addWidget(b)
-            self._dual_view_btns.append(b)
-        vb.addStretch()
-        preview_layout.addWidget(self.dual_view_bar)
-        self.dual_view_bar.setVisible(False)
 
         self.preview_label = QLabel()
         self.preview_label.setAlignment(Qt.AlignCenter)
@@ -1249,14 +754,12 @@ class ImageDitherApp(QMainWindow):
         # Initial state for dither widgets
         self.on_dither_method_change()
         self._refresh_layer_state()
-        self._refresh_dual_state()
 
     def on_dither_method_change(self):
         method = self.combo_dither.currentText()
         for w in (self.ordered_params, self.floyd_params, self.bary_params,
-                  self.layered_params, self.dual_params):
+                  self.layered_params):
             w.setVisible(False)
-        self.dual_view_bar.setVisible(False)
         if method == '有序抖动':
             self.ordered_params.setVisible(True)
             # 触发色彩空间变化以更新HSV权重显示
@@ -1267,14 +770,6 @@ class ImageDitherApp(QMainWindow):
             if LAYERED_AVAILABLE:
                 self.layered_params.setVisible(True)
                 self._refresh_layer_state()
-            else:
-                self.ordered_params.setVisible(True)
-                self.on_color_space_change()
-        elif method == '双读抖动':
-            if DUALVIEW_AVAILABLE:
-                self.dual_params.setVisible(True)
-                self.dual_view_bar.setVisible(True)
-                self._refresh_dual_state()
             else:
                 self.ordered_params.setVisible(True)
                 self.on_color_space_change()
@@ -1309,11 +804,11 @@ class ImageDitherApp(QMainWindow):
         return self._apply_pattern(p)
 
     def _apply_pattern(self, p):
-        """把面板上的网点图案/阶数写到所有层。逐层微调仍走后边的参数表。"""
+        """把面板上的网点图案/阶数写到所有层。"""
         if p is None or not hasattr(self, 'combo_layer_pattern'):
             return p
         pat = self.combo_layer_pattern.currentText()
-        size = int(self.combo_layer_size.currentData() or 8)
+        size = int(self.combo_layer_size.currentData() or 4)
         for b in p.bands:
             b.pattern = pat
             b.size = size
@@ -1357,7 +852,7 @@ class ImageDitherApp(QMainWindow):
             self.lbl_layer_state.setText('未找到 layered_dither.py，分层抖动不可用')
             return
         if not self._layer_profile_edited or self._layer_profile is None:
-            title = '参数按当前设置生成；点「编辑分层参数表…」可逐层改抖动图案'
+            title = '参数按当前设置生成；逐层调整请在网页版分层编辑器里做'
             prof = self._make_layer_profile()
         else:
             p = self._layer_profile
@@ -1372,178 +867,6 @@ class ImageDitherApp(QMainWindow):
             if n_clu:
                 title += f'\n注意：有 {n_clu} 层用 clustered，容易聚成方块色团，建议改 bayer / bluenoise'
         self.lbl_layer_state.setText(title)
-
-    # ---------------- 双读抖动 ----------------
-    def on_choose_dual_main(self):
-        """选主图 A —— 与左上角的选图是同一件事，这里只是把两个入口并排放。"""
-        path, _ = QFileDialog.getOpenFileName(
-            self, '选择主图 (A)', '', '图片 (*.png *.jpg *.jpeg *.bmp *.webp *.tif)')
-        if not path:
-            return
-        self.load_image_from_path(path)
-        self._refresh_dual_state()
-
-    def on_choose_dual_hidden(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, '选择隐藏图 (B)', '', '图片 (*.png *.jpg *.jpeg *.bmp *.webp *.tif)')
-        if not path:
-            return
-        try:
-            img = Image.open(path)
-            img.load()
-            self.dual_hidden_image = img.convert('RGB')
-        except Exception as e:
-            QMessageBox.warning(self, '打开失败', f'无法打开隐藏图: {e}')
-            return
-        self.lbl_dual_hidden.setText(os.path.basename(path))
-        self.lbl_dual_hidden.setStyleSheet('color: #ddd;')
-        self._refresh_dual_state()
-
-    def _make_dual_profile(self):
-        if not DUALVIEW_AVAILABLE:
-            return None
-        mode = self.combo_dual_mode.currentIndex()
-        return dvd.DualViewProfile(
-            k=int(self.spin_dual_k.value()),
-            levels=int(self.spin_dual_levels.value()),
-            axis='y' if mode == 2 else 'x',
-            orient=(mode == 0),
-            match_space=self.combo_dual_space.currentText(),
-            auto_level=self.chk_dual_level.isChecked(),
-            pair_prefer=float(self.spin_dual_pair.value()),
-        )
-
-    def _refresh_dual_state(self, *args):
-        if not DUALVIEW_AVAILABLE:
-            self.lbl_dual_state.setText('未找到 dualview_dither.py，双读抖动不可用')
-            return
-        k = int(self.spin_dual_k.value())
-        # 主图标签跟随实际加载的图（左上角选图 / 拖拽 / 粘贴都会走到这里）
-        if self.original_image is None:
-            self.lbl_dual_main.setText('未选择')
-            self.lbl_dual_main.setStyleSheet('color: #888;')
-        else:
-            ow, oh = self.original_image.size
-            name = os.path.basename(self.image_path) if self.image_path else '已加载'
-            self.lbl_dual_main.setText(f'{name}  {ow}×{oh}')
-            self.lbl_dual_main.setStyleSheet('color: #ddd;')
-
-        lines = [f'远看 = 主图 A，近看 = 隐藏图 B；输出边长需为 k={k} 的整数倍（不足的边裁掉）。']
-        if self.dual_hidden_image is None:
-            lines.append('还没选隐藏图 B —— 点上面「选择隐藏图…」')
-        elif self.original_image is not None:
-            ow, oh = self.original_image.size
-            lines.append(f'隐藏图网格 {max(1, ow // k)}×{max(1, oh // k)}')
-        lines.append('生成后右侧会出现「视角」按钮，可切 原始 A / 隐藏图 B / 合成·远看 / 合成·近看 1:1。')
-        lines.append('提示：隐藏图用文字、图标、剪影这类大色块图形最好读；'
-                     '复杂照片当 B 会变成噪声点。')
-        self.lbl_dual_state.setText('\n'.join(lines))
-
-    # ---- 合成结果的双视角派生与切换 ----
-    def _build_dual_views(self):
-        """从合成结果派生「远看」「近看」两张视图，供右侧预览切换。"""
-        self._dual_view_cache = {}
-        out = self.processed_image
-        if out is None or not DUALVIEW_AVAILABLE:
-            return
-        try:
-            k = int(self.spin_dual_k.value())
-            near, far = dvd.preview_pair(out, k=k, crop=DUAL_CROP)
-            self._dual_view_cache = {'near': near, 'far': far}
-        except Exception:
-            self._dual_view_cache = {}
-
-    def on_dual_view_select(self, name):
-        self._dual_view_active = name
-        for b in self._dual_view_btns:
-            b.setChecked(b.text() == name)
-        self._show_dual_view()
-
-    def _show_dual_view(self):
-        name = self._dual_view_active
-        src = None
-        if name is None or name == '原始 A':
-            src = self.original_image
-        elif name == '隐藏图 B':
-            src = self.dual_hidden_image
-        elif name.startswith('合成·远看'):
-            src = self._dual_view_cache.get('far')
-        elif name.startswith('合成·近看'):
-            src = self._dual_view_cache.get('near')
-        if src is None:
-            need = '请先选择隐藏图 B' if name == '隐藏图 B' else '请先点「预览处理结果」生成合成图'
-            self.statusBar().showMessage(f'{name}：还没有内容 —— {need}')
-            return
-        self.show_image_in_label(src)
-        hint = {
-            '原始 A': '主图 A 本身 —— 这是远看时该有的样子',
-            '隐藏图 B': '隐藏图 B —— 这是近看时该出现的内容',
-            '合成·远看 → A': '合成结果缩到 1/k 再放大，等于缩略图/退后看 —— 应该像 A',
-            '合成·近看 1:1 → B': '合成结果的中心 1:1 局部 —— 贴近屏幕应该能读出 B',
-        }.get(name)
-        if hint:
-            self.statusBar().showMessage(hint)
-
-    def on_dual_preview(self):
-        if not DUALVIEW_AVAILABLE:
-            return
-        if self.original_image is None:
-            QMessageBox.information(self, '提示', '请先选择主图 (A)')
-            return
-        if self.dual_hidden_image is None:
-            QMessageBox.information(self, '提示', '请先选择隐藏图 (B)')
-            return
-        pal = self.build_palette_list()
-        if not pal:
-            QMessageBox.information(self, '提示', '调色盘为空，请检查 palette.txt 或选择颜色')
-            return
-        prof = self._make_dual_profile()
-        try:
-            img = self._resize_image(self.original_image, self._capture_resize_params())
-            if img is None:
-                raise RuntimeError('图片为空')
-            if max(img.size) > 1400:
-                s = 1400 / max(img.size)
-                img = img.resize((max(1, int(img.width * s)), max(1, int(img.height * s))),
-                                 Image.LANCZOS)
-            out = dvd.render(img, pal, prof, hidden=self.dual_hidden_image, out_size=img.size)
-            near, far = dvd.preview_pair(out, k=prof.k, crop=560)
-        except Exception as e:
-            QMessageBox.warning(self, '预览失败', f'双读抖动失败: {e}')
-            return
-        DualViewDialog(self.pil_image_to_qpixmap(near),
-                       self.pil_image_to_qpixmap(far), prof, self).exec_()
-
-    def on_edit_layers(self):
-        p = self.current_layer_profile()
-        if p is None:
-            return
-        ratios = None
-        if self.original_image is not None:
-            try:
-                info = ldl.analyze_image(self.original_image, len(p.bands), p.space, p.edge_mode)
-                ratios = info['ratios']
-            except Exception:
-                ratios = None
-        dlg = LayerTableDialog(p, ratios, self,
-                               palette=self.build_palette_list(),
-                               image=self.original_image,
-                               preview_cb=self._layer_preview)
-        if dlg.exec_() == QDialog.Accepted:
-            self._layer_profile = p
-            self._layer_profile_edited = True
-            self._refresh_layer_state()
-            self.statusBar().showMessage('分层参数已更新')
-
-    def _layer_preview(self, index):
-        """给分层参数表用的单层预览：返回 (原色层, 抖动层)。"""
-        p = self.current_layer_profile()
-        if p is None or self.original_image is None:
-            raise RuntimeError('缺少分层预设或图片')
-        pal = self.build_palette_list()
-        img = self.original_image
-        img = self._cap_pixels(img, getattr(self, 'preview_cap', 0) or 0)
-        return ldl.render_band_preview(img, pal, p, index)
 
     def on_save_layer_profile(self):
         p = self.current_layer_profile()
@@ -1646,15 +969,10 @@ class ImageDitherApp(QMainWindow):
         self.image_path = path
         self.original_image = img
         self.processed_image = None
-        self._dual_view_cache = {}
         self.lbl_file.setText(os.path.basename(path))
         self.display_mode = 0
         self.show_image_in_label(self.original_image)
         self.statusBar().showMessage('图片加载完成')
-        try:
-            self._refresh_dual_state()
-        except Exception:
-            pass
 
     def _on_image_failed(self, err):
         self.lbl_file.setText('未选择文件')
@@ -1685,9 +1003,6 @@ class ImageDitherApp(QMainWindow):
             settings['mix_span_max'] = float(self.spin_bary_mixspan.value())
         elif settings['method'] == '分层抖动':
             settings['profile'] = self.current_layer_profile()
-        elif settings['method'] == '双读抖动':
-            settings['dual'] = self._make_dual_profile()
-            settings['hidden'] = self.dual_hidden_image
         else:
             settings['alpha'] = float(self.spin_alpha.value())
             settings['filter'] = self.combo_filter.currentText()
@@ -1731,16 +1046,6 @@ class ImageDitherApp(QMainWindow):
                 raise RuntimeError('分层抖动不可用：请确认 layered_dither.py 与 GUI.py 同目录')
             # 深拷贝：处理在后台线程跑，期间用户可能又在界面上改参数
             return run_layered_dither(img, palette, copy.deepcopy(prof))
-        elif settings['method'] == '双读抖动':
-            prof = settings.get('dual')
-            hidden = settings.get('hidden')
-            if prof is None:
-                raise RuntimeError('双读抖动不可用：请确认 dualview_dither.py 与 GUI.py 同目录')
-            if hidden is None:
-                raise RuntimeError('双读抖动需要一张隐藏图 (B)，请点「选择图片…」')
-            # out_size 用当前处理尺寸：输出与主图同尺寸，内部按 k×k 切块
-            return dvd.render(img, palette, copy.deepcopy(prof), hidden=hidden,
-                              out_size=img.size)
         else:
             return floyd_steinberg_dither(img, palette, alpha_strength=settings['alpha'],
                                           filter_type=settings.get('filter', 'FS'))
@@ -1748,13 +1053,7 @@ class ImageDitherApp(QMainWindow):
     def _on_process_done(self, out):
         self.processed_image = out
         self.display_mode = 1
-        if self.combo_dither.currentText() == '双读抖动':
-            # 双读结果在右侧按默认缩放看就是「远看」，B 看不见；
-            # 所以出图后直接切到 1:1 局部，让 B 立刻可见
-            self._build_dual_views()
-            self.on_dual_view_select('合成·近看 1:1 → B')
-        else:
-            self.show_image_in_label(self.processed_image)
+        self.show_image_in_label(self.processed_image)
         self._set_processing(False)
         if self._was_preview:
             self.statusBar().showMessage('预览已生成（大图为缩略图近似，保存时按完整尺寸处理）')
@@ -1991,8 +1290,6 @@ class ImageDitherApp(QMainWindow):
 
     def _on_save_done(self, out):
         self.processed_image = out
-        if self.combo_dither.currentText() == '双读抖动':
-            self._build_dual_views()
         folder = self.line_save.text().strip() or self.save_folder
         os.makedirs(folder, exist_ok=True)
         base = os.path.splitext(os.path.basename(self.image_path or 'result'))[0]

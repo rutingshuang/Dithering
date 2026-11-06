@@ -335,6 +335,7 @@ class Profile:
     colors_per_band: int = 8        # 每层投影色数量（越大投影越准、色差越低）
     mix_colors: int = 4             # 每个投影色用几个板内色混合：4=重心(无损) 3=三角形 2=线段
     mix2_penalty: float = 0.10      # 2 色模式下对端点距离的惩罚（0=只求拟合最近，会选出异色）
+    mix2_quantize: bool = True      # 2 色模式按图案真实档位取色（size²档），关掉=连续最优
     adaptive_k: bool = True         # 按层内颜色散度分配色数（总预算 = 层数 x colors_per_band）
     kmeans_iters: int = 20          # k-means 迭代轮数
     kmeans_sample: int = 60000      # k-means 采样上限（加速用）
@@ -454,39 +455,8 @@ def make_projection_profile(n_bands: int = 24,
     )
 
 
-def make_reference_profile(n_bands: int = 24,
-                           colors_per_band: int = 2,
-                           pattern: str = "rounddot",
-                           size: int = 8,
-                           match_space: str = "LAB",
-                           space: str = "lab",
-                           edge_mode: str = "linear",
-                           cell: int = 1) -> Profile:
-    """参考图风格：每层只给极少量的色，明暗过渡交给圆点网点。
-
-    对应 Krita 手工流程里「每层只挑两个色、用网点抖出中间调」的做法。分层让每层的
-    明暗范围很窄，2 个色就够覆盖，所以色差损失有限（实测每层 2 色 ΔE 1.125，
-    每层 12 色 0.797，绝对差 0.33），换来的是网点结构清晰、画面干净。
-
-    注意网点尺寸要和题材匹配：pattern='rounddot' 且 size=8 适合大色块的图（动画、
-    像素画）；细节密集的插画用 size=4 或改用 bayer，否则 8x8 的圆点会盖掉细节。
-    """
-    return make_profile(
-        n_bands=n_bands,
-        space=space,
-        match_space=match_space,
-        edge_mode=edge_mode,
-        pattern=pattern,
-        size=int(size),
-        cell=cell,
-        colors_per_band=int(colors_per_band),
-        name="参考图风格（每层限色·圆点网点）",
-    )
-
-
 PRESETS = {
     "projection": make_projection_profile,
-    "reference": make_reference_profile,
 }
 
 
@@ -521,6 +491,20 @@ def resolve_edges(profile: Profile, luma: Optional[np.ndarray],
 # ============================================================================
 
 _FIELD_CACHE: dict = {}
+
+
+def pattern_levels(pattern: str, size: int, seed: int = 0) -> int:
+    """该图案真正能提供多少个阈值（= 2 色混合能实现的比例档数）。
+
+    Bayer 是 N²；diagonal 只有 N；checker 只有 2。取色时必须按这个数吸附，
+    否则会用一个图案根本实现不了的档位去比距离，白算。
+    """
+    key = ("levels", pattern, size, seed)
+    n = _FIELD_CACHE.get(key)
+    if n is None:
+        n = int(np.unique(pattern_matrix(pattern, size, seed)).size)
+        _FIELD_CACHE[key] = n
+    return max(2, int(n))
 
 
 def threshold_field(pattern: str, size: int, cell: int, seed: int,
@@ -746,18 +730,72 @@ def _palette_tetra(pal: np.ndarray, space: str = "LAB"):
 _TRIU_CACHE = {}
 
 
+_QUANT_CACHE: dict = {}
+
+
+def _quant_pairs(pal_space: np.ndarray, levels: int):
+    """所有色对 × (levels+1) 档比例的混合点，缓存。
+
+    返回 (I, J, A, B, ts, Q)：Q[pair, step] 是 Lab 空间的混合点。
+    图案有 levels 个阈值，2 色混合就只能实现 step/levels 这些比例，
+    中间值一律做不到 —— 所以选色对必须在这张离散网格上做。
+    """
+    key = (int(levels), len(pal_space), hash(np.ascontiguousarray(pal_space).tobytes()))
+    hit = _QUANT_CACHE.get(key)
+    if hit is not None:
+        return hit
+    n = len(pal_space)
+    I, J = np.triu_indices(n, k=1)
+    A, B = pal_space[I], pal_space[J]
+    ts = np.linspace(0.0, 1.0, levels + 1)
+    Q = A[:, None, :] + ts[None, :, None] * (B - A)[:, None, :]
+    if len(_QUANT_CACHE) > 6:
+        _QUANT_CACHE.clear()
+    _QUANT_CACHE[key] = (I, J, A, B, ts, Q)
+    return _QUANT_CACHE[key]
+
+
+def _mix_weights_2_quant(target_rgb: np.ndarray, pal_space, space: str,
+                         levels: int, penalty: float):
+    """量化感知的 2 色取色：只在图案真正能实现的档位上找最近落点。
+
+    连续解 t* 再被图案阈值截断，等于白算；这里直接把 t 约束到 step/levels。
+    端点距离惩罚仍然必要：光按"落点最近"选色对，会专挑那种长线段恰好从目标附近
+    穿过的组合，一端是无关联的异色，权重对得上、观感是刺眼杂点。
+    """
+    p = _to_space(np.asarray(target_rgb, dtype=np.float64).reshape(1, 3), space)[0]
+    I, J, A, B, ts, Q = _quant_pairs(pal_space, levels)
+    d = np.linalg.norm(Q - p[None, None, :], axis=2)
+    best = d.argmin(axis=1)
+    dd = d[np.arange(len(best)), best]
+    if penalty > 0:
+        dd = dd + penalty * (np.linalg.norm(A - p[None, :], axis=1)
+                             + np.linalg.norm(B - p[None, :], axis=1))
+    m = int(np.argmin(dd))
+    t = float(ts[int(best[m])])
+    return np.array([I[m], J[m]], dtype=np.intp), np.array([1.0 - t, t])
+
+
 def _mix_weights_k(target_rgb: np.ndarray, pal_space, tri, Ainv,
                    hull_verts, hull_idx, space: str = "LAB",
-                   k: int = 4, cand: int = 16, penalty: float = 0.10):
+                   k: int = 4, cand: int = 16, penalty: float = 0.10,
+                   levels: int = 0):
     """用 k 个调色板色混合出目标色。k=4 走四面体重心（凸包内精确无损）。
 
     k=2/3 是"少色方案"：2 色就是把目标投影到某两个板内色连成的线段上。
     分解本身是准的，但要清楚代价——端点往往离目标很远，会选出异色做补偿
     （实测近白色被分解成 85% 白 + 15% 深橄榄），权重虽对，块内却平均不干净：
     实测区域平均 ΔE 从 0.85 升到 3.51，3 色是 2.66。
+
+    levels > 0 时启用量化感知：图案只有 levels 个阈值，混合比例只能取 step/levels
+    （2x2=4 档、4x4=16 档），返回的权重直接吸附到这些档位。晚安.jpg @20% 实测：
+    DE8 从 1.94 降到 1.81（2x2）/ 1.66（4x4 x pen0.07）。
     """
     if k >= 4:
         return _mix_weights(target_rgb, pal_space, tri, Ainv, hull_verts, hull_idx, space)
+
+    if k == 2 and levels >= 2:
+        return _mix_weights_2_quant(target_rgb, pal_space, space, levels, penalty)
 
     p = _to_space(np.asarray(target_rgb, dtype=np.float64).reshape(1, 3), space)
     n = len(pal_space)
@@ -991,11 +1029,44 @@ def render_band_preview(image: Image.Image, palette: Sequence[Sequence[int]],
     return (Image.fromarray(src_rgba, "RGBA"), Image.fromarray(out_rgba, "RGBA"))
 
 
+def line_mask_from_original(orig_rgb: np.ndarray, target_wh, thresh: float = 60.0):
+    """从**高分辨率原图**抽出深色线稿，下采样到目标尺寸并保住细线。
+
+    普通缩放（LANCZOS/BOX）是在求平均：原图里的一根 1~2px 黑线摊到 20% 的格子里
+    会变成一层浅灰，线就淡掉、断了。这里对每个目标格取「覆盖区域里最暗的那个样本」
+    （min-pool），细线只要在格子里出现过就会被选中，颜色也一并带回来。
+
+    返回 (mask, rgb)：
+      mask  目标尺寸的 bool，True = 该格有暗线
+      rgb   mask 处应使用的线色（取自原图最暗样本）
+    """
+    W, H = int(target_wh[0]), int(target_wh[1])
+    src = np.asarray(orig_rgb, dtype=np.float64)
+    h, w = src.shape[:2]
+    L = _rgb_to_lab(src)[:, :, 0]
+
+    fy = max(1, int(np.ceil(h / H)))
+    fx = max(1, int(np.ceil(w / W)))
+    pad_l = np.full((H * fy, W * fx), 255.0)
+    pad_c = np.full((H * fy, W * fx, 3), 255.0)
+    pad_l[:h, :w] = L
+    pad_c[:h, :w] = src
+
+    bl = pad_l.reshape(H, fy, W, fx).transpose(0, 2, 1, 3).reshape(H, W, fy * fx)
+    bc = pad_c.reshape(H, fy, W, fx, 3).transpose(0, 2, 1, 3, 4).reshape(H, W, fy * fx, 3)
+    k = bl.argmin(axis=2)
+    min_l = np.take_along_axis(bl, k[..., None], axis=2)[..., 0]
+    line_rgb = np.take_along_axis(bc, k[..., None, None], axis=2)[:, :, 0, :]
+    return min_l < float(thresh), line_rgb
+
+
 def layered_projection_dither(image: Image.Image,
                               palette: Sequence[Sequence[int]],
                               profile: Profile,
                               custom_patterns: Optional[dict] = None,
-                              progress=None) -> Image.Image:
+                              progress=None,
+                              line_mask=None,
+                              line_rgb=None) -> Image.Image:
     """投影 + 单独混色：把"大面积同色"和"输出落在调色板内"两件事拆开做。
 
       第 1 步 投影：按明暗分层后，每层自由聚类 K 个投影色（**允许不在调色板内**），
@@ -1110,16 +1181,31 @@ def layered_projection_dither(image: Image.Image,
             m = assign == j
             if not m.any():
                 continue
+            levels = (pattern_levels(band.pattern, band.size, band.seed)
+                      if getattr(profile, 'mix2_quantize', True) else 0)
             idx, wgt = _mix_weights_k(proj_rgb[j], pal_lab, tri, Ainv,
                                       hull_verts, hull_idx, space,
                                       k=int(getattr(profile, 'mix_colors', 4)),
-                                      penalty=float(getattr(profile, 'mix2_penalty', 0.10)))
+                                      penalty=float(getattr(profile, 'mix2_penalty', 0.10)),
+                                      levels=levels)
             cum = np.cumsum(wgt)
             pick = np.argmax(cum[None, :] >= field[m][:, None], axis=1)
-            out[sel[m]] = pal[np.asarray(idx, dtype=np.intp)[pick]]
+            px_out = pal[np.asarray(idx, dtype=np.intp)[pick]]
+            out[sel[m]] = px_out
 
         if progress:
             progress(k + 1, len(bands))
+
+    # 线稿保护：轮廓线是深色细线，抖动会把它们打断成散点。这些像素直接在
+    # 板内找最接近线色的颜色平涂 —— 线色来自原图高分辨率的最暗样本，
+    # 不是被缩放平均过的浅灰，所以线不会淡掉。
+    if line_mask is not None:
+        m = np.asarray(line_mask, dtype=bool).reshape(-1)
+        if m.any():
+            tgt = (np.asarray(line_rgb, dtype=np.float64).reshape(-1, 3)[m]
+                   if line_rgb is not None else flat[m])
+            d = ((_to_space(tgt, space)[:, None, :] - pal_lab[None, :, :]) ** 2).sum(-1)
+            out[m] = pal[d.argmin(axis=1)]
 
     return _merge_alpha(out.reshape(h, w, 3), alpha)
 
@@ -1128,10 +1214,13 @@ def render(image: Image.Image,
            palette: Sequence[Sequence[int]],
            profile: Profile,
            custom_patterns: Optional[dict] = None,
-           progress=None) -> Image.Image:
+           progress=None,
+           line_mask=None,
+           line_rgb=None) -> Image.Image:
     """渲染入口：按 Profile 做分层投影混色抖动。"""
     return layered_projection_dither(image, palette, profile,
-                                     custom_patterns, progress)
+                                     custom_patterns, progress,
+                                     line_mask=line_mask, line_rgb=line_rgb)
 
 
 def load_palette(file_path: str) -> List[Tuple[int, int, int]]:
