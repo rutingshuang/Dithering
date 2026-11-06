@@ -1566,10 +1566,15 @@ function projectionDither(img, palette, D, opts) {
       darkMask = new Uint8Array(npix);
       for (let p = 0; p < npix; p++) darkMask[p] = (lm.minL[p] < darkThr) ? 1 : 0;
     }
+    // 两遍覆盖：先铺暗块底色，再把线稿压上去。
+    // 之前是「暗块优先、线稿让位」，结果暗块把描边整个吞掉；反过来又会让清理
+    // 切碎暗块。分开两遍、mask 各自独立，清理只改线稿的形状，暗块底色不动。
     const hit = (p) => (darkMask && darkMask[p]) || (cleanMask && cleanMask[p]);
-    const colOf = (p) => (darkMask && darkMask[p])
-      ? [lm.minRGB[p * 3], lm.minRGB[p * 3 + 1], lm.minRGB[p * 3 + 2]]
-      : [RGBMAP[p * 3], RGBMAP[p * 3 + 1], RGBMAP[p * 3 + 2]];
+    const isDarkPix = (p) => !!(darkMask && darkMask[p]);
+    const isLinePix = (p) => !!(cleanMask && cleanMask[p]);
+    const colOf = (p) => isLinePix(p)
+      ? [RGBMAP[p * 3], RGBMAP[p * 3 + 1], RGBMAP[p * 3 + 2]]
+      : [lm.minRGB[p * 3], lm.minRGB[p * 3 + 1], lm.minRGB[p * 3 + 2]];
     // 分段只针对细线：暗块不该被当成可选中的线对象
     const builtMask = cleanMask || new Uint8Array(npix);
     lineGroups = labelLines(builtMask, width, height);
