@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=93fabd91">
+  <link rel="stylesheet" href="style.css?v=a2189b7c">
 </head>
 <body>
   <header>
@@ -174,6 +174,9 @@
                 <option value="1" selected data-i18n="清理">清理</option>
                 <option value="0" data-i18n="原样">原样</option>
               </select>
+              <label class="inline" title="默认只清理线稿本身；勾上后暗区也一起骨架化（会碎）">
+                <input type="checkbox" id="projLineCleanDark"> <span data-i18n="含暗区">含暗区</span>
+              </label>
             </div>
             <div class="row" style="margin-top:4px">
               <input type="range" id="projLineL" min="15" max="90" step="1" value="55" style="flex:1"
@@ -483,10 +486,10 @@
   <div class="hint">拖动面板上的细线调整分界；两端固定。背景直方图标出像素落在哪。</div>
 </div>
 
-  <script src="delaunay.js?v=93fabd91"></script>
-  <script src="dither.js?v=93fabd91"></script>
-  <script src="textpixel.js?v=93fabd91"></script>
-  <script src="app.js?v=93fabd91"></script>
+  <script src="delaunay.js?v=a2189b7c"></script>
+  <script src="dither.js?v=a2189b7c"></script>
+  <script src="textpixel.js?v=a2189b7c"></script>
+  <script src="app.js?v=a2189b7c"></script>
 
 <div id="pickPalette" class="pick-palette hidden"></div>
 </body>

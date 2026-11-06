@@ -1565,12 +1565,18 @@ function projectionDither(img, palette, D, opts) {
     const RESPMAP = light ? lm.respLight : lm.resp;
     const RGBMAP = light ? lm.rgbLight : lm.rgb;
 
-    // 细线 mask（可清理）
+    // 细线 mask。默认只清理线稿本身（细线）；勾了「含暗区」才把暗区并进来一起收，
+    // 代价是暗区会被切碎 —— 暗区内的纹理和线在像素上无法区分，只能由用户取舍。
     let cleanMask = null;
     if (lineOn) {
       const raw = new Uint8Array(npix);
-      for (let p = 0; p < npix; p++) raw[p] = (RESPMAP[p] >= thr) ? 1 : 0;
-      cleanMask = opts.lineClean ? cleanLineMask(raw, width, height) : raw;
+      const withDark = !!opts.lineCleanDark && !!darkMask;
+      for (let p = 0; p < npix; p++) {
+        raw[p] = ((RESPMAP[p] >= thr) || (withDark && darkMask[p])) ? 1 : 0;
+      }
+      cleanMask = opts.lineClean
+        ? (withDark ? cleanLineMaskFull(raw, width, height) : cleanLineMask(raw, width, height))
+        : raw;
     }
     // 暗块 mask（不清理）
     let darkMask = null;
