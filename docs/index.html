@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=d74ecea9">
+  <link rel="stylesheet" href="style.css?v=42602043">
 </head>
 <body>
   <header>
@@ -165,6 +165,7 @@
                 <option value="1" data-i18n="弱">弱</option>
                 <option value="2" data-i18n="中">中</option>
                 <option value="3" data-i18n="强">强</option>
+                <option value="4" data-i18n="整片暗部">整片暗部</option>
               </select>
               <select id="projLineDir" style="flex:1" title="暗线 / 亮线">
                 <option value="dark" selected data-i18n="暗线">暗线</option>
@@ -174,20 +175,11 @@
                 <option value="1" selected data-i18n="清理">清理</option>
                 <option value="0" data-i18n="原样">原样</option>
               </select>
-              <label class="inline" title="默认只清理线稿本身；勾上后暗区也一起骨架化（会碎）">
-                <input type="checkbox" id="projLineCleanDark"> <span data-i18n="含暗区">含暗区</span>
-              </label>
             </div>
             <div class="row" style="margin-top:4px">
               <input type="range" id="projLineL" min="15" max="90" step="1" value="55" style="flex:1"
                      title="线色亮度阈值 L*：暗线取更暗的色，亮线取更亮的色">
               <span class="hint" id="projLineLVal" style="min-width:34px;text-align:right">55</span>
-            </div>
-            <div class="row" style="margin-top:4px">
-              <label class="inline"><input type="checkbox" id="projLineDark"> <span data-i18n="整片暗部">整片暗部</span></label>
-              <span class="hint" id="projLineDarkVal" title="暗部亮度上限 L*">60</span>
-              <input type="range" id="projLineDarkThr" min="20" max="90" step="1" value="60"
-                     style="flex:1" title="低于这个 L* 的整片区域会被压成纯色">
             </div>
             <div class="row" style="margin-top:4px">
               <span class="hint" id="lineInfo">线 0 段</span>
@@ -486,10 +478,10 @@
   <div class="hint">拖动面板上的细线调整分界；两端固定。背景直方图标出像素落在哪。</div>
 </div>
 
-  <script src="delaunay.js?v=d74ecea9"></script>
-  <script src="dither.js?v=d74ecea9"></script>
-  <script src="textpixel.js?v=d74ecea9"></script>
-  <script src="app.js?v=d74ecea9"></script>
+  <script src="delaunay.js?v=42602043"></script>
+  <script src="dither.js?v=42602043"></script>
+  <script src="textpixel.js?v=42602043"></script>
+  <script src="app.js?v=42602043"></script>
 
 <div id="pickPalette" class="pick-palette hidden"></div>
 </body>

@@ -129,8 +129,8 @@ const ED_FILTERS = {
 // 270 是实测的平衡点：留 15 的过冲余量，既救回亮度又不会把颜色拽飞。
 // 写回缓冲时不再限幅，误差必须守恒。
 const PICK_LO = 0;
-// 上限由 UI 决定（255~299，可不限）。255 完全不融化但会发灰，270 保住亮度，
-// 具体取值看图——粉白高光多的图要松，暗调图可以紧。
+// 上限由 UI 决定（255~299，可关闭）。255 不融化但发灰，270 保住亮度，
+// 具体取值看图：粉白高光多的图要松，暗调图可以紧。
 const clampPickWith = (cap) => (
   (cap === undefined || cap <= 0 || cap > 400)
     ? ((v) => (v < PICK_LO ? PICK_LO : v))
@@ -1160,28 +1160,10 @@ function cutCorners(mask, w, h, maxPass) {
   return m;
 }
 
-// 全量清理：连粗块一起收成 1px 线。给「线稿清理蒙版」范围内的区域用 ——
-// 那一带本来就只有线和贴着线的暗区边缘，收细是预期行为。
-function cleanLineMaskFull(mask, w, h) {
-  return cutCorners(thinMask(mask, w, h, 60), w, h, 8);
-}
-
 function cleanLineMask(mask, w, h) {
-  // 只清理「细线」，粗块原样保留。
-  // 之前的全量版本会把成片的暗区也收成细丝 —— 那些是「面」不是「线」，
-  // 和整片暗部叠加时尤其明显：暗区被切碎，线稿清理等于在破坏暗区。
-  // 判据：腐蚀一次仍在的部分 = 宽度 > 2 的芯，把它连同周围恢复出来即为粗块。
-  const thick = morphPass(morphPass(mask, w, h, false), w, h, true);
-  const thinOnly = new Uint8Array(w * h);
-  let any = false;
-  for (let i = 0; i < mask.length; i++) {
-    if (mask[i] && !thick[i]) { thinOnly[i] = 1; any = true; }
-  }
-  if (!any) return mask;
-  const skel = cutCorners(thinMask(thinOnly, w, h, 60), w, h, 8);
-  const out = new Uint8Array(w * h);
-  for (let i = 0; i < mask.length; i++) out[i] = (thick[i] || skel[i]) ? 1 : 0;
-  return out;
+  // 全量骨架化 + 切角：粗块也一起收成 1px 线，否则「宽度 ≥3 的阶梯」会原样保留，
+  // 看起来还是有直角。想保留粗块就把「线稿清理」关掉。
+  return cutCorners(thinMask(mask, w, h, 60), w, h, 8);
 }
 
 function lineRespMap(orig, tw, th) {
@@ -1556,68 +1538,36 @@ function projectionDither(img, palette, D, opts) {
   // 线稿保护：轮廓是 1~2px 的暗线，2 色抖动会把它们打成散点。只对「局部暗谷」
   // 足够强的格子动手，成片暗部（resp 很小）不受影响 —— 否则整块暗部会被涂死。
   // 只作用在成品阶段：投影阶段要能看到真实的投影色，不能提前被线覆盖。
-  // 细线（线稿保护）与「整片暗部」是两个独立的东西：
-  //   细线 = 局部暗谷，可清理、可反转、可分段定色；
-  //   整片暗部 = 把成片暗区压成纯色，是风格化手段，不参与清理（骨架化会把它收成细丝）。
-  // 两者可以同时开：暗块优先覆盖，细线负责它之外的部分。
-  const lineOn = (opts.lineKeep ?? 0) > 0;
-  const darkOn = opts.lineDark === true;
-  if (doFinal && opts.lineMask && (lineOn || darkOn)) {
+  if (doFinal && opts.lineMask && (opts.lineKeep ?? 0) > 0) {
     const lm = opts.lineMask;
+    const dark = opts.lineMode === 'dark';       // 整片暗部（风格化），不是细线
     const thr = opts.lineThresh ?? 35;
-    const darkThr = opts.lineDarkThr ?? 60;
     const mix = Math.max(0, Math.min(1, opts.lineMix ?? 0));   // 0=纯线色 1=完全不留
+    let cleanMask = null;
+    // 「整片暗部」是风格化的整块纯色，骨架化会把它收成细线，效果很糟 —— 该模式不做清理
+    if (opts.lineClean && !dark) {
+      const raw = new Uint8Array(npix);
+      for (let p = 0; p < npix; p++) {
+        raw[p] = (dark ? (lm.minL[p] < thr) : (lm.resp[p] >= thr)) ? 1 : 0;
+      }
+      cleanMask = cleanLineMask(raw, width, height);
+    }
     const light = opts.lineDir === 'light';          // 反相：抓比周围亮的线
     const RESPMAP = light ? lm.respLight : lm.resp;
     const RGBMAP = light ? lm.rgbLight : lm.rgb;
-
-    // 细线 mask。默认只清理线稿本身（细线）；勾了「含暗区」才把暗区并进来一起收，
-    // 代价是暗区会被切碎 —— 暗区内的纹理和线在像素上无法区分，只能由用户取舍。
-    // 暗块 mask 先算：清理开启时要引用它（之前这段在后面，导致 TDZ 报错）
-    let darkMask = null;
-    if (darkOn) {
-      darkMask = new Uint8Array(npix);
-      for (let p = 0; p < npix; p++) darkMask[p] = (lm.minL[p] < darkThr) ? 1 : 0;
-    }
-    // 清理：先用「线稿的清理区域」做一个蒙版，再用它划定范围 ——
-    //   范围之内：线稿 + 暗区 一起清理（暗区在这里是贴着线的边缘，该一起收）
-    //   范围之外：线稿原样、暗区原样（不碰）
-    // 这样暗区只在线经过的地方被处理，不会被整片扫成碎片。
-    let lineFinal = null;      // 最终要画的线稿像素
-    let darkFinal = null;      // 最终要铺的暗块像素
-    let zone = null;           // 清理范围蒙版（线稿及其外扩一圈）
-    if (lineOn) {
-      const raw = new Uint8Array(npix);
-      for (let p = 0; p < npix; p++) raw[p] = (RESPMAP[p] >= thr) ? 1 : 0;
-      if (!opts.lineClean) {
-        lineFinal = raw;
-      } else {
-        // ① 线稿清理区域蒙版：线稿本身 + 1px 外扩
-        zone = morphPass(raw, width, height, true);
-        // ② 范围之内把暗区并进来，一起清理
-        const takeDark = !!opts.lineCleanDark && !!darkMask;
-        const target = new Uint8Array(npix);
-        for (let p = 0; p < npix; p++) {
-          target[p] = (zone[p] && (raw[p] || (takeDark && darkMask[p]))) ? 1 : 0;
-        }
-        const cleaned = cleanLineMaskFull(target, width, height);
-        // ③ 范围内用清理结果，范围外保留原始线稿
-        lineFinal = new Uint8Array(npix);
-        for (let p = 0; p < npix; p++) lineFinal[p] = zone[p] ? cleaned[p] : raw[p];
-        // ④ 暗块：落在清理范围内的那些像素已被上面接管，范围外的保持原样
-        if (darkMask) {
-          darkFinal = new Uint8Array(npix);
-          for (let p = 0; p < npix; p++) darkFinal[p] = (darkMask[p] && !zone[p]) ? 1 : 0;
-        }
+    const hit = (p) => cleanMask ? !!cleanMask[p]
+      : (dark ? (lm.minL[p] < thr) : (RESPMAP[p] >= thr));
+    const colOf = (p) => dark
+      ? [lm.minRGB[p * 3], lm.minRGB[p * 3 + 1], lm.minRGB[p * 3 + 2]]
+      : [RGBMAP[p * 3], RGBMAP[p * 3 + 1], RGBMAP[p * 3 + 2]];
+    // 分段：每段可以被单独指定「固定色 / 跟随投影」
+    const builtMask = cleanMask || (() => {
+      const m = new Uint8Array(npix);
+      for (let p = 0; p < npix; p++) {
+        m[p] = (dark ? (lm.minL[p] < thr) : (RESPMAP[p] >= thr)) ? 1 : 0;
       }
-    }
-    const hit = (p) => (lineFinal && lineFinal[p]) || (darkFinal && darkFinal[p]);
-    const isLinePix = (p) => !!(lineFinal && lineFinal[p]);
-    const colOf = (p) => isLinePix(p)
-      ? [RGBMAP[p * 3], RGBMAP[p * 3 + 1], RGBMAP[p * 3 + 2]]
-      : [lm.minRGB[p * 3], lm.minRGB[p * 3 + 1], lm.minRGB[p * 3 + 2]];
-    // 分段只针对细线：暗块不该被当成可选中的线对象
-    const builtMask = lineFinal || new Uint8Array(npix);
+      return m;
+    })();
     lineGroups = labelLines(builtMask, width, height);
     const lineSlots = opts.lineSlots || null;
     lineSlotMap = lineSlots;
