@@ -128,12 +128,19 @@ const ED_FILTERS = {
 // 吃掉，浅色区域丢掉亮度补偿，整片发灰（实测灰像素 70.9% -> 76.5%，DE8 0.55 -> 1.24）。
 // 270 是实测的平衡点：留 15 的过冲余量，既救回亮度又不会把颜色拽飞。
 // 写回缓冲时不再限幅，误差必须守恒。
-const PICK_LO = 0, PICK_HI = 270;
-const clampPick = (v) => (v < PICK_LO ? PICK_LO : (v > PICK_HI ? PICK_HI : v));
+const PICK_LO = 0;
+// 上限由 UI 决定（255~299，可不限）。255 完全不融化但会发灰，270 保住亮度，
+// 具体取值看图——粉白高光多的图要松，暗调图可以紧。
+const clampPickWith = (cap) => (
+  (cap === undefined || cap <= 0 || cap > 400)
+    ? ((v) => (v < PICK_LO ? PICK_LO : v))
+    : ((v) => (v < PICK_LO ? PICK_LO : (v > cap ? cap : v)))
+);
 
 function errorDiffusion(img, palette, opts) {
   opts = opts || {};
   const { width, height, data } = img;
+  const clampPick = clampPickWith(opts.edCap);
   const weights = ED_FILTERS[opts.filter || 'FS'];
   const alpha = opts.alpha ?? 1.0;
   // 工作数组：RGB float + 透明度
@@ -1252,6 +1259,7 @@ function lineRespMap(orig, tw, th) {
 function diffuseImage2D(img, palette, opts) {
   opts = opts || {};
   const { width, height, data } = img;
+  const clampPick = clampPickWith(opts.edCap);
   const weights = ED_FILTERS[opts.filter || 'FS'];
   const alpha = opts.alpha ?? 1.0;
   const arr = new Float32Array(width * height * 3);
@@ -1294,6 +1302,7 @@ function diffuseSeq(seq, palette, opts, out) {
   opts = opts || {};
   const alpha = opts.alpha ?? 1;
   const gain = (opts.strength ?? 64) / 64;
+  const clampPick = clampPickWith(opts.edCap);
   const kern = SEQ_KERNELS[opts.filter] || SEQ_KERNELS.FS;
   const pend = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
   for (const p of seq) {
@@ -1529,36 +1538,40 @@ function projectionDither(img, palette, D, opts) {
   // 线稿保护：轮廓是 1~2px 的暗线，2 色抖动会把它们打成散点。只对「局部暗谷」
   // 足够强的格子动手，成片暗部（resp 很小）不受影响 —— 否则整块暗部会被涂死。
   // 只作用在成品阶段：投影阶段要能看到真实的投影色，不能提前被线覆盖。
-  if (doFinal && opts.lineMask && (opts.lineKeep ?? 0) > 0) {
+  // 细线（线稿保护）与「整片暗部」是两个独立的东西：
+  //   细线 = 局部暗谷，可清理、可反转、可分段定色；
+  //   整片暗部 = 把成片暗区压成纯色，是风格化手段，不参与清理（骨架化会把它收成细丝）。
+  // 两者可以同时开：暗块优先覆盖，细线负责它之外的部分。
+  const lineOn = (opts.lineKeep ?? 0) > 0;
+  const darkOn = opts.lineDark === true;
+  if (doFinal && opts.lineMask && (lineOn || darkOn)) {
     const lm = opts.lineMask;
-    const dark = opts.lineMode === 'dark';       // 整片暗部（风格化），不是细线
     const thr = opts.lineThresh ?? 35;
+    const darkThr = opts.lineDarkThr ?? 60;
     const mix = Math.max(0, Math.min(1, opts.lineMix ?? 0));   // 0=纯线色 1=完全不留
-    let cleanMask = null;
-    // 「整片暗部」是风格化的整块纯色，骨架化会把它收成细线，效果很糟 —— 该模式不做清理
-    if (opts.lineClean && !dark) {
-      const raw = new Uint8Array(npix);
-      for (let p = 0; p < npix; p++) {
-        raw[p] = (dark ? (lm.minL[p] < thr) : (lm.resp[p] >= thr)) ? 1 : 0;
-      }
-      cleanMask = cleanLineMask(raw, width, height);
-    }
     const light = opts.lineDir === 'light';          // 反相：抓比周围亮的线
     const RESPMAP = light ? lm.respLight : lm.resp;
     const RGBMAP = light ? lm.rgbLight : lm.rgb;
-    const hit = (p) => cleanMask ? !!cleanMask[p]
-      : (dark ? (lm.minL[p] < thr) : (RESPMAP[p] >= thr));
-    const colOf = (p) => dark
+
+    // 细线 mask（可清理）
+    let cleanMask = null;
+    if (lineOn) {
+      const raw = new Uint8Array(npix);
+      for (let p = 0; p < npix; p++) raw[p] = (RESPMAP[p] >= thr) ? 1 : 0;
+      cleanMask = opts.lineClean ? cleanLineMask(raw, width, height) : raw;
+    }
+    // 暗块 mask（不清理）
+    let darkMask = null;
+    if (darkOn) {
+      darkMask = new Uint8Array(npix);
+      for (let p = 0; p < npix; p++) darkMask[p] = (lm.minL[p] < darkThr) ? 1 : 0;
+    }
+    const hit = (p) => (darkMask && darkMask[p]) || (cleanMask && cleanMask[p]);
+    const colOf = (p) => (darkMask && darkMask[p])
       ? [lm.minRGB[p * 3], lm.minRGB[p * 3 + 1], lm.minRGB[p * 3 + 2]]
       : [RGBMAP[p * 3], RGBMAP[p * 3 + 1], RGBMAP[p * 3 + 2]];
-    // 分段：每段可以被单独指定「固定色 / 跟随投影」
-    const builtMask = cleanMask || (() => {
-      const m = new Uint8Array(npix);
-      for (let p = 0; p < npix; p++) {
-        m[p] = (dark ? (lm.minL[p] < thr) : (RESPMAP[p] >= thr)) ? 1 : 0;
-      }
-      return m;
-    })();
+    // 分段只针对细线：暗块不该被当成可选中的线对象
+    const builtMask = cleanMask || new Uint8Array(npix);
     lineGroups = labelLines(builtMask, width, height);
     const lineSlots = opts.lineSlots || null;
     lineSlotMap = lineSlots;
