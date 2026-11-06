@@ -1412,6 +1412,16 @@ function projectionDither(img, palette, D, opts) {
   };
   const autoStateOf = new Map();   // 层号:色位 → 自动投影色的渲染状态
 
+  // 整片暗部：在「投影」这一阶段就决定 —— 暗区像素直接用所属投影色平涂，不抖动。
+  // 放在这里而不是末端蒙版，是为了让它走正常的投影管线（颜色来自本层聚类结果），
+  // 也不和线稿蒙版抢像素。
+  let darkFlat = null;
+  if (doFinal && opts.lineMask && opts.lineDark === true) {
+    darkFlat = new Uint8Array(npix);
+    const dThr = opts.lineDarkThr ?? 60;
+    for (let p = 0; p < npix; p++) darkFlat[p] = (opts.lineMask.minL[p] < dThr) ? 1 : 0;
+  }
+
   const pick = new Array(npix);            // 每像素的渲染状态（null = 不渲染）
   const seqs = new Map();                  // 槽 → 层内 1D 误差扩散像素序列
   const edOpts = new Map();                // filter|alpha → 槽（2D 贴图共享）
@@ -1524,6 +1534,8 @@ function projectionDither(img, palette, D, opts) {
       const luma = 0.299 * src[o] + 0.587 * src[o + 1] + 0.114 * src[o + 2];
       if ((hi - lo) > st.spanCap && luma > 76) { put(o, palette[nearestRGBIdx(st.c, palette)]); continue; }
     }
+    // 整片暗部：平涂该像素的投影色，跳过抖动
+    if (darkFlat && darkFlat[p]) { put(o, palette[nearestRGBIdx(st.c, palette)]); continue; }
     const tt = thAt(st.mv, p);
     let acc = 0, sel = st.mx.w.length - 1;
     for (let k = 0; k < st.mx.w.length; k++) { acc += st.mx.w[k]; if (acc >= tt) { sel = k; break; } }
@@ -1543,11 +1555,9 @@ function projectionDither(img, palette, D, opts) {
   //   整片暗部 = 把成片暗区压成纯色，是风格化手段，不参与清理（骨架化会把它收成细丝）。
   // 两者可以同时开：暗块优先覆盖，细线负责它之外的部分。
   const lineOn = (opts.lineKeep ?? 0) > 0;
-  const darkOn = opts.lineDark === true;
-  if (doFinal && opts.lineMask && (lineOn || darkOn)) {
+  if (doFinal && opts.lineMask && lineOn) {
     const lm = opts.lineMask;
     const thr = opts.lineThresh ?? 35;
-    const darkThr = opts.lineDarkThr ?? 60;
     const mix = Math.max(0, Math.min(1, opts.lineMix ?? 0));   // 0=纯线色 1=完全不留
     const light = opts.lineDir === 'light';          // 反相：抓比周围亮的线
     const RESPMAP = light ? lm.respLight : lm.resp;
@@ -1560,18 +1570,16 @@ function projectionDither(img, palette, D, opts) {
       for (let p = 0; p < npix; p++) raw[p] = (RESPMAP[p] >= thr) ? 1 : 0;
       cleanMask = opts.lineClean ? cleanLineMask(raw, width, height) : raw;
     }
-    // 暗块 mask（不清理）
-    let darkMask = null;
-    if (darkOn) {
-      darkMask = new Uint8Array(npix);
-      for (let p = 0; p < npix; p++) darkMask[p] = (lm.minL[p] < darkThr) ? 1 : 0;
-    }
-    const hit = (p) => (darkMask && darkMask[p]) || (cleanMask && cleanMask[p]);
-    const colOf = (p) => (darkMask && darkMask[p])
-      ? [lm.minRGB[p * 3], lm.minRGB[p * 3 + 1], lm.minRGB[p * 3 + 2]]
-      : [RGBMAP[p * 3], RGBMAP[p * 3 + 1], RGBMAP[p * 3 + 2]];
+    // 线稿只管线，且不进入暗块：暗块内部的纹理也算「暗谷」，不挡住的话清理会把
+    // 整片暗部切碎 —— 正是「清理破坏暗部投影」的来源。
+    const hit = (p) => !!(cleanMask && cleanMask[p]) && !(darkFlat && darkFlat[p]);
+    const colOf = (p) => [RGBMAP[p * 3], RGBMAP[p * 3 + 1], RGBMAP[p * 3 + 2]];
     // 分段只针对细线：暗块不该被当成可选中的线对象
-    const builtMask = cleanMask || new Uint8Array(npix);
+    const builtMask = cleanMask ? (() => {
+      const m = new Uint8Array(npix);
+      for (let p = 0; p < npix; p++) m[p] = (cleanMask[p] && !(darkFlat && darkFlat[p])) ? 1 : 0;
+      return m;
+    })() : new Uint8Array(npix);
     lineGroups = labelLines(builtMask, width, height);
     const lineSlots = opts.lineSlots || null;
     lineSlotMap = lineSlots;
