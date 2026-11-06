@@ -123,9 +123,13 @@ const ED_FILTERS = {
            [2,-2,1/42],[2,-1,2/42],[2,0,4/42],[2,1,2/42],[2,2,1/42]],
 };
 
-// 误差扩散的累积值必须夹在 [0,255]：不夹的话高光区误差会一路累加到 300+，
-// 选色时用这种值去找最近色会被拉向纯白 —— 表现出来就是颜色「融化」成一片白。
-const clamp255 = (v) => (v < 0 ? 0 : (v > 255 ? 255 : v));
+// 误差扩散的累积值在「选色」时必须限幅：不限制时高光区能累到 300+，最近色查询
+// 会被一路拉向纯白，颜色就「融化」了。但也不能卡到 255 —— 那样连正常的过冲都被
+// 吃掉，浅色区域丢掉亮度补偿，整片发灰（实测灰像素 70.9% -> 76.5%，DE8 0.55 -> 1.24）。
+// 270 是实测的平衡点：留 15 的过冲余量，既救回亮度又不会把颜色拽飞。
+// 写回缓冲时不再限幅，误差必须守恒。
+const PICK_LO = 0, PICK_HI = 270;
+const clampPick = (v) => (v < PICK_LO ? PICK_LO : (v > PICK_HI ? PICK_HI : v));
 
 function errorDiffusion(img, palette, opts) {
   opts = opts || {};
@@ -144,7 +148,7 @@ function errorDiffusion(img, palette, opts) {
     for (let x = 0; x < width; x++) {
       const i = y * width + x;
       if (alphaCh[i] === 0) { out[i * 4 + 3] = 0; continue; }
-      const old = [clamp255(arr[i * 3]), clamp255(arr[i * 3 + 1]), clamp255(arr[i * 3 + 2])];
+      const old = [clampPick(arr[i * 3]), clampPick(arr[i * 3 + 1]), clampPick(arr[i * 3 + 2])];
       const idx = nearestRGBIdx(old, palette);
       const nw = palette[idx];
       out[i * 4] = nw[0]; out[i * 4 + 1] = nw[1]; out[i * 4 + 2] = nw[2];
@@ -154,9 +158,9 @@ function errorDiffusion(img, palette, opts) {
         const ny = y + wgt[0], nx = x + wgt[1];
         if (ny >= 0 && ny < height && nx >= 0 && nx < width) {
           const j = (ny * width + nx) * 3;
-          arr[j] = clamp255(arr[j] + qe[0] * wgt[2]);
-          arr[j + 1] = clamp255(arr[j + 1] + qe[1] * wgt[2]);
-          arr[j + 2] = clamp255(arr[j + 2] + qe[2] * wgt[2]);
+          arr[j] += qe[0] * wgt[2];
+          arr[j + 1] += qe[1] * wgt[2];
+          arr[j + 2] += qe[2] * wgt[2];
         }
       }
     }
@@ -1261,7 +1265,7 @@ function diffuseImage2D(img, palette, opts) {
     for (let x = 0; x < width; x++) {
       const i = y * width + x;
       if (alphaCh[i] === 0) continue;
-      const old = [clamp255(arr[i * 3]), clamp255(arr[i * 3 + 1]), clamp255(arr[i * 3 + 2])];
+      const old = [clampPick(arr[i * 3]), clampPick(arr[i * 3 + 1]), clampPick(arr[i * 3 + 2])];
       const c = palette[nearestRGBIdx(old, palette)];
       out[i * 4] = c[0]; out[i * 4 + 1] = c[1]; out[i * 4 + 2] = c[2]; out[i * 4 + 3] = 255;
       const qe = [(old[0] - c[0]) * alpha, (old[1] - c[1]) * alpha, (old[2] - c[2]) * alpha];
@@ -1269,9 +1273,9 @@ function diffuseImage2D(img, palette, opts) {
         const ny = y + wgt[0], nx = x + wgt[1];
         if (ny >= 0 && ny < height && nx >= 0 && nx < width) {
           const j = (ny * width + nx) * 3;
-          arr[j] = clamp255(arr[j] + qe[0] * wgt[2]);
-          arr[j + 1] = clamp255(arr[j + 1] + qe[1] * wgt[2]);
-          arr[j + 2] = clamp255(arr[j + 2] + qe[2] * wgt[2]);
+          arr[j] += qe[0] * wgt[2];
+          arr[j + 1] += qe[1] * wgt[2];
+          arr[j + 2] += qe[2] * wgt[2];
         }
       }
     }
@@ -1294,8 +1298,8 @@ function diffuseSeq(seq, palette, opts, out) {
   const pend = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
   for (const p of seq) {
     const o = p * 4;
-    const want = [clamp255(out[o] + pend[0][0]), clamp255(out[o + 1] + pend[0][1]),
-                  clamp255(out[o + 2] + pend[0][2])];
+    const want = [clampPick(out[o] + pend[0][0]), clampPick(out[o + 1] + pend[0][1]),
+                  clampPick(out[o + 2] + pend[0][2])];
     const c = palette[nearestRGBIdx(want, palette)];
     out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; out[o + 3] = 255;
     const e = [(want[0] - c[0]) * alpha * gain,
