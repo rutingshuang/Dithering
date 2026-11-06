@@ -8,8 +8,9 @@
 
 `E:/Python/Dithering` —— 一个**调色板抖动（dithering）工具**，同一套算法有两个前端：
 
-- **桌面版**：PyQt5，`GUI.py` + `dithers.py` + `layered_dither.py`（+ 用户新建的 `dualview_dither.py`）
+- **桌面版**：PyQt5，`GUI.py` + `dithers.py` + `layered_dither.py`
 - **网页版**：`docs/`，GitHub Pages 发布在 https://rutingshuang.github.io/Dithering/
+  —— **目前唯一带交互式分层编辑器（三阶段）的前端**
 
 仓库：https://github.com/rutingshuang/Dithering （分支 `main`）
 
@@ -25,13 +26,14 @@
 
 | 文件 | 行数 | 作用 |
 | --- | --- | --- |
-| `layered_dither.py` | 930 | 分层投影混色引擎（当前主线） |
-| `dithers.py` | 859 | 原有三种基础抖动：有序 / 误差扩散 / 重心混合。**未改动，别动** |
-| `GUI.py` | 1657 | 桌面界面。含 4 个方法面板 + 参数表对话框 |
-| `dualview_dither.py` | ? | **用户新建的「双读抖动」**，见第 6 节 |
-| `docs/dither.js` | 728 | 网页版算法（有序 / 误差扩散 / 重心混合 / 分层投影） |
+| `layered_dither.py` | 1231 | 分层投影混色引擎（当前主线） |
+| `dithers.py` | 1105 | 原有三种基础抖动：有序 / 误差扩散 / 重心混合。**未改动，别动** |
+| `GUI.py` | 1329 | 桌面界面。3 个方法面板（有序 / 误差扩散 / 重心混合 / 分层抖动） |
+| `docs/dither.js` | 1162 | 网页版算法 + **分层编辑器引擎**（analyzeProjection / projectionDither / 5 种层内方法） |
 | `docs/textpixel.js` | 384 | 汉字转像素图 |
-| `docs/app.js` | 301 | 网页版 UI 逻辑 + 页签 + 版本自检 |
+| `docs/app.js` | 1117 | 网页版 UI 逻辑 + **三阶段编辑器状态机**（分界拖动 / 画笔 / 色阶 / 工程存档） |
+| `docs/style.css` | 295 | 网页版样式（含编辑器浮窗） |
+| `docs/index.html` | 411 | 网页版结构（含编辑器浮窗 DOM） |
 | `docs/update_asset_version.py` | 48 | 改完 js/css 后跑它，刷新 `?v=` 缓存号 |
 | `test/_delta_eval.py` | — | 色差评估脚本（ΔE76 + 纹理能量 + 色数 + 板外计数） |
 | `test/_gui_smoke.py` | — | 桌面 GUI 离屏冒烟 |
@@ -52,13 +54,16 @@ fc71a95 Allocate projection colours per band by colour spread
 643cf1e Keep multi-level text colours inside the palette
 ```
 
-**未提交的工作区改动（用户新增，不是我做的）**：
+**未提交的工作区改动**：
 
-- `M GUI.py` —— 内含分层抖动面板（我的）+ 双读抖动面板（用户的）
-- `?? dualview_dither.py`、`?? README_双读抖动.md`
+- `M GUI.py` / `M layered_dither.py` —— 双读抖动、参考图风格预设、4×4 以上单元、分层参数表 的清理
+- `M docs/app.js` / `M docs/dither.js` / `M docs/index.html` / `M docs/style.css` —— 网页版三阶段分层编辑器
 - `?? README_分层抖动.md`
 
-**接手第一件事**：确认这些改动的归属，别直接提交或回滚。用户可能正在做「双读抖动」。
+`dualview_dither.py` 与 `README_双读抖动.md` 已于本轮删除（备份在 `test/_backup/`）。
+
+**接手第一件事**：`git status` 确认工作区，别直接提交或回滚。上面这批改动都是
+`20261031-1500-web-editor` 迭代的产物（`.vibe/runs/` 下有 brief 与 impl）。
 
 ---
 
@@ -246,15 +251,61 @@ python layered_dither.py in.png out.png --save-profile p.json
 
 ---
 
-## 6. 双读抖动（用户新建，我不了解细节）
+## 6. 网页版分层编辑器（三阶段）
 
-`dualview_dither.py` + `README_双读抖动.md` + `GUI.py` 里的对应面板，都是**用户自己写的**，我没参与。
+入口：网页版「分层投影混色」面板 → **打开分层编辑器**（或先点「分析各层」）。浮窗内三个页签。
 
-从文件头注释看：一张图远看是 A（用 k×k 块混合色承载），近看是 B（用块内 n 个亮点的排列自由度编码），两个通道共用块结构，A 侧无损。
+**架构：分析与渲染分离。** 这是整个编辑器的前提，别改回去。
 
-**接手时请先读 `README_双读抖动.md` 和 `dualview_dither.py`，别按分层投影的假设去改它。**
+```
+analyzeProjection  原始图 ──色阶──▶ luma ──分界──▶ 每层 members ──k-means──▶ projRGB + mixes
+                                                     │
+bucketBands(plan, img, cluster=false)  ← 只重分桶，投影色与配方复用（拖分界 = 40ms）
+                                                     │
+projectionDither(plan, slots, labels, stage)  ← 渲染：自动投影 / 手动槽 / 手绘标签 / 5 种方法
+```
 
----
+`plan` 一旦建好，拖分界、改颜色、画笔涂抹都**不重跑 k-means**。
+
+### 三个阶段各自能改什么
+
+| 阶段 | 控件 | 引擎路径 |
+| --- | --- | --- |
+| ① 分层 | 分界把手（`plan.edges`，两端固定、中间可拖、单调不减）；色阶 black/white/gamma（浮窗与主面板双向镜像） | 分界 → `bucketBands(cluster=false)`；色阶 → `analyzeProjection` 全量重跑（luma 变了，必须重聚类） |
+| ② 投影 | 颜色槽增删改（色号 / 自定义 RGB）、画笔（大小 / 橡皮 / 清除）、导入自动、清空回自动 | `opts.slots` + `opts.labels` + `opts.labelSlots` |
+| ③ 抖动 | 每槽独立方法：`mix` 重心混合（Lab投影/精修/跨度/凸包外投影/权重截断）、`ordered` 有序、`direct` 平涂、`error` 层内一维扩散、`ed` 二维扩散 | `slotState()` 预计算，逐像素按缓存状态渲染 |
+
+### 自动化兜底的三条规则（都是实测出来的）
+
+1. **未涂过的槽不参与自动分配**。`slots[b]` 里 `used=false` 的槽只对手绘标签生效，
+   所以「+ 添加颜色」不会立刻抢走一片区域 —— 用户涂到哪算哪。
+2. **删色兜底只并入「同层的其它槽」**，绝不指向自动投影色。
+   早期版本把自动投影色也当候选（`uid=-1`），删除时会把手绘区域悄悄清空 ——
+   实测 14862 px 手绘一键归零，`test/_js_editor_check.js` 里有这条回归。
+3. **标签指向不存在的槽 = 回自动**，不崩、不留透明洞。
+
+### 三阶段预览
+
+浮窗顶部三张并排：`pvSource` / `pvProj`（可涂）/ `pvFinal`，都是**当前层**
+（`onlyBand=curBand`，其余透明）。主画布另有一套「成品图 / 当前层 × 原色/投影色/抖动色」。
+
+画笔挂在三张 canvas 上（`bindPaint`），坐标从显示尺寸换算回图像像素。拖动时只重画
+`pvProj`（19 ms 路径），松手 320 ms 后全量刷新。
+
+### 工程存档
+
+`buildProjectPayload()` → JSON：参数 / `edges` / `slots`（含 `used`）/ `labels`（RLE）/ `uidSeq`。
+载入后按 `edges` 重建 plan，再恢复槽与标签。
+
+## 6.5 网页版引擎的其他事实
+
+- 五种层内方法在 200×300 上全部板外 0，耗时 30~62 ms（`test/_js_editor_check.js`）
+- `ed` 是独立通道：先整图跑一遍 FS 得到贴图，只有 `method='ed'` 的像素取用它的结果，
+  其它像素不受影响（误差不会在像素间丢失）
+- `diffuseSeq`（层内一维）是同槽像素按扫描序扩散，效果弱于二维，保留是因为它不需要
+  整图状态，单层预览里最便宜
+- 阈值矩阵是 4×4 的 4 种（bayer/clustered/diagonal/spiral）；`DITHER_MATRICES.rounddot`
+  是 8×8，界面上没有入口
 
 ## 7. 汉字像素图（网页版）
 
@@ -301,7 +352,11 @@ python test/_gui_smoke.py                   # 离屏跑通 GUI 全链路
 
 # 网页版
 node test/_js_check.js                      # 算法正确性 + 板外必须为 0
+node test/_js_editor_check.js               # 分层编辑器：色阶/分界/手绘/5 种方法/板外（16 项）
+node test/_js_perf.js                       # 引擎性能基线（675x1200）
 node test/_js_ui_check.js                   # index.html 与脚本的 DOM id 一致性
+python test/_serve.py 8011 &                # 本地服务（禁缓存）
+python test/_browser_check.py               # 真 Chromium 端到端 14 项（需 Edge）
 
 # 网页改动后
 python docs/update_asset_version.py
@@ -314,8 +369,9 @@ python docs/update_asset_version.py
 ## 10. 未完成 / 可做
 
 1. **推送到远端**：`fc71a95` 和 `643cf1e` 两个提交还在本地
-2. **确认 `dualview_dither.py` 的状态**：用户新建、未提交，需问清楚是否要一起入库
+2. ~~确认 `dualview_dither.py` 的状态~~ —— 已按用户决定删除
 3. **「全局模式」显式化**：层数=1 就是全局投影（纯色差最优），UI 里不明显，可加成一个选项
+3b. **桌面版没有对应编辑器**：本轮只做了网页版；`LayerColorDialog` 的能力（层内颜色槽）现在只在网页版
 4. **扩充调色板工具**：这是解决 63 色凸包容量的**唯一根本解**。思路——分析原色板覆盖不足的亮度/色相区域，按需补色并导出成新的 `palette.txt`。实测 21% 的投影色落在凸包外，补到 128~256 色应该能同时满足「低色差」和「落盘内」
 5. **层边界与每层图案的联动**：目前参数表可逐层改图案，但没有「按明度自动给暗部配点簇、高光配平涂」的预设
 6. **重心混合的剩余空间**：凸包外投影仍有 8.8%（中位）冗余，2 轮面内精修拿回 5%。再往下要按块平均而非逐像素做目标函数（两者在 3 轮以上分叉），投入产出比低
@@ -327,5 +383,6 @@ python docs/update_asset_version.py
 
 - 用户（YG）技术很扎实，会直接质疑结论。**给数据，不要给判断**。
 - 他反复强调「落到调色盘内」，任何改动都要检查这一点。
-- 他会自己写代码（双读抖动就是），改 `GUI.py` 前先看工作区有没有他的改动。
+- 他会自己写代码（历史上的「双读抖动」就是他自己写的，已于 2026-10-31 按他的决定删除），
+  改 `GUI.py` / `docs/` 前先看工作区有没有他的改动。
 - 他喜欢先看**实测对比**再决定，别只给方案。
