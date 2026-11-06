@@ -1567,27 +1567,31 @@ function projectionDither(img, palette, D, opts) {
 
     // 细线 mask。默认只清理线稿本身（细线）；勾了「含暗区」才把暗区并进来一起收，
     // 代价是暗区会被切碎 —— 暗区内的纹理和线在像素上无法区分，只能由用户取舍。
-    let cleanMask = null;
-    if (lineOn) {
-      const raw = new Uint8Array(npix);
-      const withDark = !!opts.lineCleanDark && !!darkMask;
-      for (let p = 0; p < npix; p++) {
-        raw[p] = ((RESPMAP[p] >= thr) || (withDark && darkMask[p])) ? 1 : 0;
-      }
-      cleanMask = opts.lineClean
-        ? (withDark ? cleanLineMaskFull(raw, width, height) : cleanLineMask(raw, width, height))
-        : raw;
-    }
-    // 暗块 mask（不清理）
+    // 暗块 mask 先算：清理开启时要引用它（之前这段在后面，导致 TDZ 报错）
     let darkMask = null;
     if (darkOn) {
       darkMask = new Uint8Array(npix);
       for (let p = 0; p < npix; p++) darkMask[p] = (lm.minL[p] < darkThr) ? 1 : 0;
     }
+    // 清理分两种对象，各用各的算法：
+    //   线稿 —— 骨架化 + 切角（它本来就是线，收细是目的）
+    //   暗区 —— 只切角、不收细（它是面，骨架化会碎成渣）
+    // 「含暗区」勾上时暗区也参与边缘处理，但保持块状。
+    let cleanMask = null;
+    let darkCleanMask = null;
+    if (lineOn) {
+      const raw = new Uint8Array(npix);
+      for (let p = 0; p < npix; p++) raw[p] = (RESPMAP[p] >= thr) ? 1 : 0;
+      cleanMask = opts.lineClean ? cleanLineMask(raw, width, height) : raw;
+      if (opts.lineClean && opts.lineCleanDark && darkMask) {
+        darkCleanMask = cutCorners(darkMask, width, height, 8);
+      }
+    }
     // 两遍覆盖：先铺暗块底色，再把线稿压上去。
     // 之前是「暗块优先、线稿让位」，结果暗块把描边整个吞掉；反过来又会让清理
     // 切碎暗块。分开两遍、mask 各自独立，清理只改线稿的形状，暗块底色不动。
-    const hit = (p) => (darkMask && darkMask[p]) || (cleanMask && cleanMask[p]);
+    const hit = (p) => (cleanMask && cleanMask[p])
+      || (darkCleanMask ? !!darkCleanMask[p] : !!(darkMask && darkMask[p]));
     const isDarkPix = (p) => !!(darkMask && darkMask[p]);
     const isLinePix = (p) => !!(cleanMask && cleanMask[p]);
     const colOf = (p) => isLinePix(p)
