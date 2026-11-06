@@ -410,8 +410,10 @@ def ordered_dithering_with_error(image, palette, method="bayer", strength=64,
                     processed[yy, xx] = True
                     continue
 
-                # 原像素 + 偏移 + 当前误差
-                old_pixel = arr_rgb[y, x] + matrix_norm[yy, xx] + error_buf[yy, xx]
+                # 原像素 + 偏移 + 当前误差；必须夹到 [0,255] —— 误差累积能到 300+，
+                # 用这种值去找最近色会被拉向纯白，观感就是颜色「融化」成一片。
+                old_pixel = np.clip(
+                    arr_rgb[y, x] + matrix_norm[yy, xx] + error_buf[yy, xx], 0, 255)
 
                 if color_space.upper() == "HSV" and hsv_palette is not None:
                     old_pixel_hsv = arr_hsv[y, x] + matrix_norm[yy, xx] / 255.0
@@ -439,6 +441,8 @@ def ordered_dithering_with_error(image, palette, method="bayer", strength=64,
                 if weights_sum > 0:
                     norm_weights = weights_map / weights_sum
                     error_buf += err * norm_weights[:, :, None]
+                    # 缓冲也夹住，避免单个坏点把整块拖偏
+                    np.clip(error_buf, -255, 255, out=error_buf)
 
     out = np.clip(out, 0, 255).astype(np.uint8)
 

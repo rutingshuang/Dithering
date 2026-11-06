@@ -123,6 +123,10 @@ const ED_FILTERS = {
            [2,-2,1/42],[2,-1,2/42],[2,0,4/42],[2,1,2/42],[2,2,1/42]],
 };
 
+// 误差扩散的累积值必须夹在 [0,255]：不夹的话高光区误差会一路累加到 300+，
+// 选色时用这种值去找最近色会被拉向纯白 —— 表现出来就是颜色「融化」成一片白。
+const clamp255 = (v) => (v < 0 ? 0 : (v > 255 ? 255 : v));
+
 function errorDiffusion(img, palette, opts) {
   opts = opts || {};
   const { width, height, data } = img;
@@ -140,7 +144,7 @@ function errorDiffusion(img, palette, opts) {
     for (let x = 0; x < width; x++) {
       const i = y * width + x;
       if (alphaCh[i] === 0) { out[i * 4 + 3] = 0; continue; }
-      const old = [arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]];
+      const old = [clamp255(arr[i * 3]), clamp255(arr[i * 3 + 1]), clamp255(arr[i * 3 + 2])];
       const idx = nearestRGBIdx(old, palette);
       const nw = palette[idx];
       out[i * 4] = nw[0]; out[i * 4 + 1] = nw[1]; out[i * 4 + 2] = nw[2];
@@ -150,7 +154,9 @@ function errorDiffusion(img, palette, opts) {
         const ny = y + wgt[0], nx = x + wgt[1];
         if (ny >= 0 && ny < height && nx >= 0 && nx < width) {
           const j = (ny * width + nx) * 3;
-          arr[j] += qe[0] * wgt[2]; arr[j + 1] += qe[1] * wgt[2]; arr[j + 2] += qe[2] * wgt[2];
+          arr[j] = clamp255(arr[j] + qe[0] * wgt[2]);
+          arr[j + 1] = clamp255(arr[j + 1] + qe[1] * wgt[2]);
+          arr[j + 2] = clamp255(arr[j + 2] + qe[2] * wgt[2]);
         }
       }
     }
@@ -1255,7 +1261,7 @@ function diffuseImage2D(img, palette, opts) {
     for (let x = 0; x < width; x++) {
       const i = y * width + x;
       if (alphaCh[i] === 0) continue;
-      const old = [arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]];
+      const old = [clamp255(arr[i * 3]), clamp255(arr[i * 3 + 1]), clamp255(arr[i * 3 + 2])];
       const c = palette[nearestRGBIdx(old, palette)];
       out[i * 4] = c[0]; out[i * 4 + 1] = c[1]; out[i * 4 + 2] = c[2]; out[i * 4 + 3] = 255;
       const qe = [(old[0] - c[0]) * alpha, (old[1] - c[1]) * alpha, (old[2] - c[2]) * alpha];
@@ -1263,7 +1269,9 @@ function diffuseImage2D(img, palette, opts) {
         const ny = y + wgt[0], nx = x + wgt[1];
         if (ny >= 0 && ny < height && nx >= 0 && nx < width) {
           const j = (ny * width + nx) * 3;
-          arr[j] += qe[0] * wgt[2]; arr[j + 1] += qe[1] * wgt[2]; arr[j + 2] += qe[2] * wgt[2];
+          arr[j] = clamp255(arr[j] + qe[0] * wgt[2]);
+          arr[j + 1] = clamp255(arr[j + 1] + qe[1] * wgt[2]);
+          arr[j + 2] = clamp255(arr[j + 2] + qe[2] * wgt[2]);
         }
       }
     }
@@ -1286,7 +1294,8 @@ function diffuseSeq(seq, palette, opts, out) {
   const pend = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
   for (const p of seq) {
     const o = p * 4;
-    const want = [out[o] + pend[0][0], out[o + 1] + pend[0][1], out[o + 2] + pend[0][2]];
+    const want = [clamp255(out[o] + pend[0][0]), clamp255(out[o + 1] + pend[0][1]),
+                  clamp255(out[o + 2] + pend[0][2])];
     const c = palette[nearestRGBIdx(want, palette)];
     out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; out[o + 3] = 255;
     const e = [(want[0] - c[0]) * alpha * gain,
