@@ -1161,9 +1161,21 @@ function cutCorners(mask, w, h, maxPass) {
 }
 
 function cleanLineMask(mask, w, h) {
-  // 全量骨架化 + 切角：粗块也一起收成 1px 线，否则「宽度 ≥3 的阶梯」会原样保留，
-  // 看起来还是有直角。想保留粗块就把「线稿清理」关掉。
-  return cutCorners(thinMask(mask, w, h, 60), w, h, 8);
+  // 只清理「细线」，粗块原样保留。
+  // 之前的全量版本会把成片的暗区也收成细丝 —— 那些是「面」不是「线」，
+  // 和整片暗部叠加时尤其明显：暗区被切碎，线稿清理等于在破坏暗区。
+  // 判据：腐蚀一次仍在的部分 = 宽度 > 2 的芯，把它连同周围恢复出来即为粗块。
+  const thick = morphPass(morphPass(mask, w, h, false), w, h, true);
+  const thinOnly = new Uint8Array(w * h);
+  let any = false;
+  for (let i = 0; i < mask.length; i++) {
+    if (mask[i] && !thick[i]) { thinOnly[i] = 1; any = true; }
+  }
+  if (!any) return mask;
+  const skel = cutCorners(thinMask(thinOnly, w, h, 60), w, h, 8);
+  const out = new Uint8Array(w * h);
+  for (let i = 0; i < mask.length; i++) out[i] = (thick[i] || skel[i]) ? 1 : 0;
+  return out;
 }
 
 function lineRespMap(orig, tw, th) {
