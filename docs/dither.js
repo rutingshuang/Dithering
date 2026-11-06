@@ -1160,12 +1160,6 @@ function cutCorners(mask, w, h, maxPass) {
   return m;
 }
 
-// 全量清理：连粗块一起收成 1px 线。用于「线稿 + 清理」同时开启时，
-// 把线稿和暗区当作同一个对象来细化。
-function cleanLineMaskFull(mask, w, h) {
-  return cutCorners(thinMask(mask, w, h, 60), w, h, 8);
-}
-
 function cleanLineMask(mask, w, h) {
   // 只清理「细线」，粗块原样保留。
   // 之前的全量版本会把成片的暗区也收成细丝 —— 那些是「面」不是「线」，
@@ -1571,32 +1565,26 @@ function projectionDither(img, palette, D, opts) {
     const RESPMAP = light ? lm.respLight : lm.resp;
     const RGBMAP = light ? lm.rgbLight : lm.rgb;
 
-    // 暗块 mask 先算：清理开启时要把它和线稿并成一片一起清理
+    // 细线 mask（可清理）
+    let cleanMask = null;
+    if (lineOn) {
+      const raw = new Uint8Array(npix);
+      for (let p = 0; p < npix; p++) raw[p] = (RESPMAP[p] >= thr) ? 1 : 0;
+      cleanMask = opts.lineClean ? cleanLineMask(raw, width, height) : raw;
+    }
+    // 暗块 mask（不清理）
     let darkMask = null;
     if (darkOn) {
       darkMask = new Uint8Array(npix);
       for (let p = 0; p < npix; p++) darkMask[p] = (lm.minL[p] < darkThr) ? 1 : 0;
     }
-    // 细线 mask。清理开启时，清理范围 = 线稿 ∪ 暗区（两者本来就重叠），
-    // 整片一起细化；清理关闭时只画线稿，暗区保持整块。
-    let cleanMask = null;
-    if (lineOn) {
-      const raw = new Uint8Array(npix);
-      for (let p = 0; p < npix; p++) {
-        raw[p] = ((RESPMAP[p] >= thr) || (darkMask && darkMask[p])) ? 1 : 0;
-      }
-      cleanMask = opts.lineClean ? cleanLineMaskFull(raw, width, height) : raw;
-    }
     // 两遍覆盖：先铺暗块底色，再把线稿压上去。
     // 之前是「暗块优先、线稿让位」，结果暗块把描边整个吞掉；反过来又会让清理
     // 切碎暗块。分开两遍、mask 各自独立，清理只改线稿的形状，暗块底色不动。
-    // 清理开启时，覆盖范围就是清理后的并集（暗块被细化后不再整块覆盖）；
-    // 清理关闭时，暗块保持整块、线稿单独叠加。
-    const hit = (p) => cleanMask ? !!cleanMask[p] : !!(darkMask && darkMask[p]);
+    const hit = (p) => (darkMask && darkMask[p]) || (cleanMask && cleanMask[p]);
     const isDarkPix = (p) => !!(darkMask && darkMask[p]);
     const isLinePix = (p) => !!(cleanMask && cleanMask[p]);
-    // 清理后的像素：原本属于暗块的仍用暗块色，原本是线的用线色
-    const colOf = (p) => (isLinePix(p) && !(darkMask && darkMask[p]))
+    const colOf = (p) => isLinePix(p)
       ? [RGBMAP[p * 3], RGBMAP[p * 3 + 1], RGBMAP[p * 3 + 2]]
       : [lm.minRGB[p * 3], lm.minRGB[p * 3 + 1], lm.minRGB[p * 3 + 2]];
     // 分段只针对细线：暗块不该被当成可选中的线对象
