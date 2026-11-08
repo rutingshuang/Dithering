@@ -80,7 +80,7 @@ function gatherOpts() {
              edCap: off ? 0 : (+($('edCap') || {}).value || 270) });
   }
   if (m === 'direct') {
-    return Object.assign(lo, { colorSpace: 'RGB' });
+    return Object.assign(lo, { colorSpace: ($('directSpace') || {}).value || 'RGB' });
   }
   if (m === 'projection') {
     const black = +($('gradeBlack') || {}).value || 0;
@@ -1743,6 +1743,7 @@ function updateMethodParams() {
   $('orderedParams').classList.toggle('hidden', m !== 'ordered');
   $('edParams').classList.toggle('hidden', m !== 'error_diffusion');
   $('baryParams').classList.toggle('hidden', m !== 'barycentric');
+  if ($('directParams')) $('directParams').classList.toggle('hidden', m !== 'direct');
   $('projParams').classList.toggle('hidden', m !== 'projection');
   $('method').disabled = ED.editing;
 }
@@ -1804,7 +1805,7 @@ onEl('edCapOff', 'change', () => {
   if ($('edCap')) $('edCap').disabled = $('edCapOff').checked;
   scheduleProcess();
 });
-['matrix', 'colorSpace', 'filter', 'baryMatrix', 'projEdge', 'projSpace']
+['matrix', 'colorSpace', 'filter', 'baryMatrix', 'projEdge', 'projSpace', 'directSpace']
   .forEach(id => onEl(id, 'change', onParamChange));
 
 // 数字输入框：input 事件防抖生效（边输入边看效果），change 立刻生效
