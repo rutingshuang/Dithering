@@ -56,6 +56,22 @@ function resizeData(imgData, tw, th) {
 
 // ---------- 参数收集 ----------
 // 线稿参数对**所有方法**生效，所以在这里统一算，不再塞进 projection 分支
+// 预处理参数（亮度/饱和度/色相/色阶），作用于缩放后的原图
+function preOpts() {
+  return {
+    bright: +($('preBright') || {}).value || 0,
+    sat: ($('preSat') ? +$('preSat').value : 100),
+    hue: +($('preHue') || {}).value || 0,
+    black: +($('preBlack') || {}).value || 0,
+    white: +($('preWhite') || {}).value || 1,
+    gamma: +($('preGamma') || {}).value || 1,
+  };
+}
+function preIsIdentity(o) {
+  return !o.bright && o.sat === 100 && !o.hue
+    && o.black === 0 && o.white === 1 && o.gamma === 1;
+}
+
 function lineOpts() {
   const L = LINE_LEVELS[+($('projLineKeep') || {}).value || 0] || LINE_LEVELS[0];
   // 整片暗部（档位 4）不做清理，对上层也报告为关
@@ -513,7 +529,11 @@ const LINE_LEVELS = {
 function buildPlan(opts, keepEdges) {
   ensureBaryData();
   const [tw, th] = computeTarget(srcData.width, srcData.height);
-  const src = resizeData(srcData, tw, th);
+  let src = resizeData(srcData, tw, th);
+  // 预处理在分析之前：分层、投影、抖动看到的都是处理后的图，
+  // 「原色」视图（ED.src）自然也是处理后的结果
+  const po = preOpts();
+  if (!preIsIdentity(po)) src = preprocessImage(src, po);
   const nBands = opts.bands;
   const oldN = ED.plan ? ED.plan.nBands : 0;
   const oldK = ED.plan ? ED.plan.K : 0;
@@ -671,7 +691,9 @@ function mainResult() {
   } else {
     if (needsBaryData(m)) ensureBaryData();
     const [tw, th] = computeTarget(srcData.width, srcData.height);
-    const src = resizeData(srcData, tw, th);
+    let src = resizeData(srcData, tw, th);
+    const po2 = preOpts();
+    if (!preIsIdentity(po2)) src = preprocessImage(src, po2);
     // 线稿蒙版对所有方法生效（分层投影内部自带，其余走通用覆盖层）
     const o2 = gatherOpts();
     o2.lineMask = lineMaskCache(tw, th);
@@ -2312,6 +2334,31 @@ onEl('unlockBtn', 'click', () => {
 onEl('edgeBar', 'mousedown', ev => { edgeBarDrag(ev); ev.preventDefault(); });
 onEl('gradeHist', 'mousedown', ev => { gradeHistDrag(ev); ev.preventDefault(); });
 
+// ---------- 预处理浮窗 ----------
+onEl('openPre', 'click', () => $('prePanel').classList.toggle('hidden'));
+onEl('preClose', 'click', () => $('prePanel').classList.add('hidden'));
+[['preBright','preBrightVal',0], ['preSat','preSatVal',0], ['preHue','preHueVal',0],
+ ['preBlack','preBlackVal',2], ['preWhite','preWhiteVal',2], ['preGamma','preGammaVal',2]]
+  .forEach(([id, vid, digits]) => {
+    onEl(id, 'input', () => {
+      const v = +$(id).value;
+      if ($(vid)) $(vid).textContent = digits ? v.toFixed(digits) : String(v);
+      clearTimeout(window.__preTimer);
+      window.__preTimer = setTimeout(() => { bumpRev(); onParamChange(); }, 220);
+    });
+  });
+onEl('preReset', 'click', () => {
+  $('preBright').value = 0; $('preSat').value = 100; $('preHue').value = 0;
+  $('preBlack').value = 0; $('preWhite').value = 1; $('preGamma').value = 1;
+  if ($('preBrightVal')) $('preBrightVal').textContent = '0';
+  if ($('preSatVal')) $('preSatVal').textContent = '100';
+  if ($('preHueVal')) $('preHueVal').textContent = '0';
+  if ($('preBlackVal')) $('preBlackVal').textContent = '0.00';
+  if ($('preWhiteVal')) $('preWhiteVal').textContent = '1.00';
+  if ($('preGammaVal')) $('preGammaVal').textContent = '1.00';
+  bumpRev(); onParamChange();
+});
+
 // ---------- 浮层可拖动 + 记住位置 ----------
 function makePanelDraggable(panelId) {
   const panel = $(panelId);
@@ -2406,7 +2453,7 @@ updateGradeSummary();
 updateViewButtons();
 fitCanvas();
 refreshLockState();
-['gradePanel', 'edgePanel', 'slotDialog'].forEach(makePanelDraggable);
+['gradePanel', 'edgePanel', 'slotDialog', 'prePanel'].forEach(makePanelDraggable);
 
 // ---------- 页签切换：图像抖动 / 汉字像素图 ----------
 document.querySelectorAll('.tab').forEach(btn => {

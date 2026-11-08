@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=0fcfaff4">
+  <link rel="stylesheet" href="style.css?v=79eaa6bc">
 </head>
 <body>
   <header>
@@ -270,6 +270,7 @@
       <section class="card">
         <div class="card-head">
           <h3>图层 <span class="badge" id="bandCount">-</span></h3>
+          <button class="mini" id="openPre" data-i18n="预处理">预处理</button>
           <button class="mini" id="openEdge" data-i18n="阈值…">阈值…</button>
         </div>
         <div class="band-list" id="bandList"></div>
@@ -467,6 +468,33 @@
     </div>
   </div>
 
+<!-- ===================== 预处理浮窗（右上角，可拖动） ===================== -->
+<div id="prePanel" class="float-panel pre-panel hidden">
+  <div class="fp-title"><span data-i18n="预处理">预处理</span><span class="fp-close" id="preClose">x</span></div>
+  <div class="grade-row"><span class="grade-name" data-i18n="亮度">亮度</span>
+    <input type="range" id="preBright" min="-100" max="100" step="1" value="0">
+    <span class="grade-val" id="preBrightVal">0</span></div>
+  <div class="grade-row"><span class="grade-name" data-i18n="饱和度">饱和度</span>
+    <input type="range" id="preSat" min="0" max="200" step="1" value="100">
+    <span class="grade-val" id="preSatVal">100</span></div>
+  <div class="grade-row"><span class="grade-name" data-i18n="色相">色相</span>
+    <input type="range" id="preHue" min="-180" max="180" step="1" value="0">
+    <span class="grade-val" id="preHueVal">0</span></div>
+  <div class="grade-row"><span class="grade-name">黑场</span>
+    <input type="range" id="preBlack" min="0" max="0.9" step="0.01" value="0">
+    <span class="grade-val" id="preBlackVal">0.00</span></div>
+  <div class="grade-row"><span class="grade-name">白场</span>
+    <input type="range" id="preWhite" min="0.1" max="1" step="0.01" value="1">
+    <span class="grade-val" id="preWhiteVal">1.00</span></div>
+  <div class="grade-row"><span class="grade-name">中间调</span>
+    <input type="range" id="preGamma" min="0.3" max="3" step="0.05" value="1">
+    <span class="grade-val" id="preGammaVal">1.00</span></div>
+  <div class="row" style="justify-content:flex-end; margin-top:10px">
+    <button class="mini" id="preReset" data-i18n="复位">复位</button>
+  </div>
+  <div class="hint">作用在原图上，之后的分层与抖动都基于处理结果；切到「原色」视图看到的就是处理后的样子</div>
+</div>
+
 <!-- ===================== 色阶面板（可关闭） ===================== -->
 <div id="gradePanel" class="float-panel hidden">
   <div class="fp-title"><span>色阶 · 截掉两端的灰</span><span class="fp-close" id="gradeClose">x</span></div>
@@ -505,10 +533,10 @@
   <div class="hint">拖动面板上的细线调整分界；两端固定。背景直方图标出像素落在哪。</div>
 </div>
 
-  <script src="delaunay.js?v=0fcfaff4"></script>
-  <script src="dither.js?v=0fcfaff4"></script>
-  <script src="textpixel.js?v=0fcfaff4"></script>
-  <script src="app.js?v=0fcfaff4"></script>
+  <script src="delaunay.js?v=79eaa6bc"></script>
+  <script src="dither.js?v=79eaa6bc"></script>
+  <script src="textpixel.js?v=79eaa6bc"></script>
+  <script src="app.js?v=79eaa6bc"></script>
 
 <div id="pickPalette" class="pick-palette hidden"></div>
 </body>

@@ -1609,6 +1609,74 @@ function projectionDither(img, palette, D, opts) {
            lineLab: lineGroups ? lineGroups.lab : null };
 }
 
+// ---------- 预处理：亮度 / 饱和度 / 色相 / 色阶 ----------
+// 作用在**缩放后的原图**上，之后的分层、投影、抖动全部基于处理结果。
+// 所以切到「原色」视图看到的也是处理后的样子 —— 这正是要的效果。
+function preprocessImage(img, o) {
+  o = o || {};
+  const bright = (o.bright ?? 0) / 100;        // -1..1
+  const sat = (o.sat ?? 100) / 100;            // 0..2
+  const hue = (o.hue ?? 0) / 360;              // -0.5..0.5 圈
+  const black = o.black ?? 0, white = o.white ?? 1, gamma = o.gamma ?? 1;
+  const noGrade = (black === 0 && white === 1 && gamma === 1);
+  if (!bright && sat === 1 && !hue && noGrade) return img;
+
+  const { width, height, data } = img;
+  const out = new Uint8ClampedArray(data);
+  const span = Math.max(1e-6, white - black);
+
+  for (let i = 0; i < width * height; i++) {
+    const p0 = i * 4;
+    if (data[p0 + 3] === 0) continue;
+    let r = data[p0] / 255, g = data[p0 + 1] / 255, b = data[p0 + 2] / 255;
+
+    // 色相 / 饱和度：走 HSL，和 PS 的「色相/饱和度」一致
+    if (hue || sat !== 1) {
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      let hh = 0; const l = (mx + mn) / 2;
+      const d = mx - mn;
+      if (d > 1e-9) {
+        if (mx === r) hh = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+        else if (mx === g) hh = ((b - r) / d + 2) / 6;
+        else hh = ((r - g) / d + 4) / 6;
+      }
+      let ss = d > 1e-9 ? d / (1 - Math.abs(2 * l - 1) + 1e-9) : 0;
+      hh = (hh + hue + 1) % 1;
+      ss = Math.min(1, ss * sat);
+      // HSL -> RGB
+      const q = l < 0.5 ? l * (1 + ss) : l + ss - l * ss;
+      const pp = 2 * l - q;
+      const f = (t) => {
+        if (t < 0) t += 1; if (t > 1) t -= 1;
+        if (t < 1 / 6) return pp + (q - pp) * 6 * t;
+        if (t < 1 / 2) return q;
+        if (t < 2 / 3) return pp + (q - pp) * (2 / 3 - t) * 6;
+        return pp;
+      };
+      r = f(hh + 1 / 3); g = f(hh); b = f(hh - 1 / 3);
+    }
+
+    // 亮度
+    if (bright) { r += bright; g += bright; b += bright; }
+
+    // 色阶（PS 输入白场语义）：先按黑白场拉伸，再施加 gamma
+    if (!noGrade) {
+      const c = (v) => {
+        let x = (v - black) / span;
+        x = x < 0 ? 0 : (x > 1 ? 1 : x);
+        if (gamma !== 1) x = Math.pow(x, gamma);
+        return x;
+      };
+      r = c(r); g = c(g); b = c(b);
+    }
+
+    out[p0] = Math.round(Math.max(0, Math.min(1, r)) * 255);
+    out[p0 + 1] = Math.round(Math.max(0, Math.min(1, g)) * 255);
+    out[p0 + 2] = Math.round(Math.max(0, Math.min(1, b)) * 255);
+  }
+  return { width, height, data: out };
+}
+
 // ---------- 直接投影 ----------
 // 不做任何抖动：每个像素直接取最近的板内色。作为基准线用，也是「投影色」的
 // 最直白实现 —— 看一张图在给定调色板下的理论上限时最先看这个。

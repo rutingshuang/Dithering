@@ -441,3 +441,9 @@ body.editing #dstCanvas { cursor: crosshair; }
   border: 1px solid #333;
   font-size: 12px;
 }
+
+
+/* 预处理浮窗：默认贴右上角，可拖动（位置会被记住） */
+.pre-panel { left: auto; right: 18px; top: 72px; bottom: auto; transform: none; width: 300px; }
+.pre-panel .grade-row { padding: 4px 14px; }
+.pre-panel .grade-name { width: 58px; }
