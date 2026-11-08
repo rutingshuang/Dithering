@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=42602043">
+  <link rel="stylesheet" href="style.css?v=092a583a">
 </head>
 <body>
   <header>
@@ -52,6 +52,7 @@
       <section class="card">
         <div class="card-head"><h3 data-i18n="抖动方法">抖动方法</h3></div>
         <select id="method">
+          <option value="direct" data-i18n="直接投影">直接投影</option>
           <option value="projection" selected data-i18n="分层投影混色">分层投影混色</option>
           <option value="barycentric" data-i18n="重心混合">重心混合</option>
           <option value="ordered" data-i18n="有序抖动">有序抖动</option>
@@ -157,6 +158,10 @@
               <select id="projMatrix"></select>
             </div>
           </div>
+        </div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h3 data-i18n="线稿">线稿</h3></div>
           <div class="field">
             <label data-i18n="线稿">线稿</label>
             <div class="row">
@@ -190,8 +195,8 @@
               <button class="mini" id="linePickFixed" data-i18n="取色">取色</button>
             </div>
           </div>
-        </div>
       </section>
+
 
       <section class="card">
         <div class="card-head"><h3>调色板 <span class="badge" id="palCount">63</span>/63</h3></div>
@@ -478,10 +483,10 @@
   <div class="hint">拖动面板上的细线调整分界；两端固定。背景直方图标出像素落在哪。</div>
 </div>
 
-  <script src="delaunay.js?v=42602043"></script>
-  <script src="dither.js?v=42602043"></script>
-  <script src="textpixel.js?v=42602043"></script>
-  <script src="app.js?v=42602043"></script>
+  <script src="delaunay.js?v=092a583a"></script>
+  <script src="dither.js?v=092a583a"></script>
+  <script src="textpixel.js?v=092a583a"></script>
+  <script src="app.js?v=092a583a"></script>
 
 <div id="pickPalette" class="pick-palette hidden"></div>
 </body>

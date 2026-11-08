@@ -66,6 +66,9 @@ function gatherOpts() {
     return { filter: $('filter').value, alpha: +$('alpha').value,
              edCap: off ? 0 : (+($('edCap') || {}).value || 270) };
   }
+  if (m === 'direct') {
+    return { colorSpace: 'RGB' };
+  }
   if (m === 'projection') {
     const black = +($('gradeBlack') || {}).value || 0;
     const white = +($('gradeWhite') || {}).value || 1;
@@ -107,6 +110,7 @@ function gatherOpts() {
 
 // 需要 Delaunay 数据的方法（全选时用离线预计算，子集时运行时构建）
 function needsBaryData(m) { return m === 'barycentric' || m === 'projection'; }
+function needsPalette(m) { return m !== 'direct' || true; }
 
 // 凸包/四面体混合要求 >= 4 色：少于 4 色时 projectToHull 拿不到有效面
 const MIN_HULL_COLORS = 4;
@@ -659,7 +663,10 @@ function mainResult() {
     if (needsBaryData(m)) ensureBaryData();
     const [tw, th] = computeTarget(srcData.width, srcData.height);
     const src = resizeData(srcData, tw, th);
-    im = runDither(src, m, getSelectedPalette(), baryData, gatherOpts());
+    // 线稿蒙版对所有方法生效（分层投影内部自带，其余走通用覆盖层）
+    const o2 = gatherOpts();
+    o2.lineMask = lineMaskCache(tw, th);
+    im = runDither(src, m, getSelectedPalette(), baryData, o2);
   }
   mainCache = { key, im };
   return im;
@@ -2414,7 +2421,7 @@ document.querySelectorAll('.tab').forEach(btn => {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
 })();
 
-const I18N_EN = {"图像抖动": "Image Dither", "汉字像素图": "Text Pixels", "图像": "Image", "输出尺寸": "Output Size", "抖动方法": "Dither Method", "分层投影混色": "Layered Projection", "重心混合": "Barycentric Mix", "有序抖动": "Ordered Dither", "误差扩散": "Error Diffusion", "色彩空间": "Color Space", "阈值矩阵": "Threshold Matrix", "扩散核": "Diffusion Kernel", "层数": "Bands", "每层色数": "Colors / Band", "每色用几个板内色混合": "Palette Colors / Mix", "4 色": "4 Colors", "3 色": "3 Colors", "2 色": "2 Colors", "分层依据": "Band Split", "绝对明度": "Absolute Luma", "自适应等频": "Adaptive Quantile", "线稿保护": "Line Keep", "关": "Off", "弱": "Weak", "中": "Medium", "强": "Strong", "整片暗部": "Solid Dark", "线稿清理": "Line Cleanup", "开": "On", "全选": "Select All", "全不选": "Select None", "选免费": "Free Only", "选付费": "Paid Only", "成品": "Result", "原色": "Source", "投影色": "Projection", "抖动色": "Dithered", "适应": "Fit", "进入分层编辑器": "Open Editor", "退出编辑器": "Close Editor", "处理": "Process", "下载结果": "Download", "阈值…": "Threshold…", "色阶": "Levels", "调整…": "Adjust…", "解锁并清除上色": "Unlock & Clear", "撤销": "Undo", "重做": "Redo", "清除本层手绘": "Clear Band Paint", "这一层的颜色": "Colors in This Band", "+ 颜色": "+ Color", "导入自动": "Import Auto", "文字": "Text", "字体": "Font", "载入字体文件…": "Load Font…", "换行方式": "Line Break", "手动": "Manual", "自动": "Auto", "前景色": "Foreground", "调色板：全部 63 色": "Palette: all 63", "黑白灰": "Grayscale", "免费色": "Free Colors", "付费色": "Paid Colors", "背景色": "Background", "灰度级数": "Gray Levels", "1 级": "1 Level", "2 级": "2 Levels", "3 级": "3 Levels", "4 级": "4 Levels", "6 级": "6 Levels", "8 级": "8 Levels", "16 级": "16 Levels", "超采样": "Supersampling", "导出放大倍数": "Export Scale", "下载 PNG": "Download PNG", "复位": "Reset", "应用": "Apply", "删除这个颜色": "Delete Color", "完成": "Done", "1x": "1x", "4x": "4x", "8x": "8x", "中文": "Chinese", "像素图": "Pixels", "凸包投影": "Hull Projection", "只看当前层": "Current Band Only", "图层": "Layers", "字号": "Font Size", "强度": "Strength", "扰动强度": "Perturbation", "投影走 Lab": "Project in Lab", "权重截断": "Weight Cutoff", "橡皮": "Eraser", "混合跨度上限": "Mix Span Limit", "画笔": "Brush", "行距": "Line Height", "调色板": "Palette", "跨层涂": "Cross-band Paint", "轮": "Rounds", "边缘保护阈值": "Edge Guard Threshold", "边缘阈值": "Edge Threshold", "线稿": "Linework", "暗线": "Dark line", "亮线": "Light line", "清理": "Clean", "原样": "Raw", "透明背景": "Transparent BG", "面内精修": "In-face Refine", "颜色限制在调色板内": "Clamp to Palette", "高亮当前色": "Highlight Current"};
+const I18N_EN = {"图像抖动": "Image Dither", "汉字像素图": "Text Pixels", "图像": "Image", "输出尺寸": "Output Size", "抖动方法": "Dither Method", "分层投影混色": "Layered Projection", "直接投影": "Direct Project", "重心混合": "Barycentric Mix", "有序抖动": "Ordered Dither", "误差扩散": "Error Diffusion", "色彩空间": "Color Space", "阈值矩阵": "Threshold Matrix", "扩散核": "Diffusion Kernel", "层数": "Bands", "每层色数": "Colors / Band", "每色用几个板内色混合": "Palette Colors / Mix", "4 色": "4 Colors", "3 色": "3 Colors", "2 色": "2 Colors", "分层依据": "Band Split", "绝对明度": "Absolute Luma", "自适应等频": "Adaptive Quantile", "线稿保护": "Line Keep", "关": "Off", "弱": "Weak", "中": "Medium", "强": "Strong", "整片暗部": "Solid Dark", "线稿清理": "Line Cleanup", "开": "On", "全选": "Select All", "全不选": "Select None", "选免费": "Free Only", "选付费": "Paid Only", "成品": "Result", "原色": "Source", "投影色": "Projection", "抖动色": "Dithered", "适应": "Fit", "进入分层编辑器": "Open Editor", "退出编辑器": "Close Editor", "处理": "Process", "下载结果": "Download", "阈值…": "Threshold…", "色阶": "Levels", "调整…": "Adjust…", "解锁并清除上色": "Unlock & Clear", "撤销": "Undo", "重做": "Redo", "清除本层手绘": "Clear Band Paint", "这一层的颜色": "Colors in This Band", "+ 颜色": "+ Color", "导入自动": "Import Auto", "文字": "Text", "字体": "Font", "载入字体文件…": "Load Font…", "换行方式": "Line Break", "手动": "Manual", "自动": "Auto", "前景色": "Foreground", "调色板：全部 63 色": "Palette: all 63", "黑白灰": "Grayscale", "免费色": "Free Colors", "付费色": "Paid Colors", "背景色": "Background", "灰度级数": "Gray Levels", "1 级": "1 Level", "2 级": "2 Levels", "3 级": "3 Levels", "4 级": "4 Levels", "6 级": "6 Levels", "8 级": "8 Levels", "16 级": "16 Levels", "超采样": "Supersampling", "导出放大倍数": "Export Scale", "下载 PNG": "Download PNG", "复位": "Reset", "应用": "Apply", "删除这个颜色": "Delete Color", "完成": "Done", "1x": "1x", "4x": "4x", "8x": "8x", "中文": "Chinese", "像素图": "Pixels", "凸包投影": "Hull Projection", "只看当前层": "Current Band Only", "图层": "Layers", "字号": "Font Size", "强度": "Strength", "扰动强度": "Perturbation", "投影走 Lab": "Project in Lab", "权重截断": "Weight Cutoff", "橡皮": "Eraser", "混合跨度上限": "Mix Span Limit", "画笔": "Brush", "行距": "Line Height", "调色板": "Palette", "跨层涂": "Cross-band Paint", "轮": "Rounds", "边缘保护阈值": "Edge Guard Threshold", "边缘阈值": "Edge Threshold", "线稿": "Linework", "暗线": "Dark line", "亮线": "Light line", "清理": "Clean", "原样": "Raw", "透明背景": "Transparent BG", "面内精修": "In-face Refine", "颜色限制在调色板内": "Clamp to Palette", "高亮当前色": "Highlight Current"};
 let LANG = 'zh';
 function t(s) { return LANG === 'en' ? (I18N_EN[s] || s) : s; }
 function applyLang(lang, save) {

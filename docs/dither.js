@@ -1607,11 +1607,98 @@ function projectionDither(img, palette, D, opts) {
            lineLab: lineGroups ? lineGroups.lab : null };
 }
 
+// ---------- 直接投影 ----------
+// 不做任何抖动：每个像素直接取最近的板内色。作为基准线用，也是「投影色」的
+// 最直白实现 —— 看一张图在给定调色板下的理论上限时最先看这个。
+function directProject(img, palette, D, opts) {
+  opts = opts || {};
+  const { width, height, data } = img;
+  const out = new Uint8ClampedArray(data.length);
+  const useLab = (opts.colorSpace || 'RGB') === 'Lab';
+  const palLab = useLab ? palette.map(rgbToLab) : null;
+  for (let i = 0; i < width * height; i++) {
+    const o = i * 4;
+    if (data[o + 3] === 0) { out[o + 3] = 0; continue; }
+    const c = [data[o], data[o + 1], data[o + 2]];
+    const idx = useLab ? nearestLabIdx(c, palLab) : nearestRGBIdx(c, palette);
+    const p = palette[idx];
+    out[o] = p[0]; out[o + 1] = p[1]; out[o + 2] = p[2]; out[o + 3] = 255;
+  }
+  return { width, height, data: out };
+}
+
+// ---------- 线稿 / 整片暗部覆盖（通用） ----------
+// 有序抖动、误差扩散、重心混合、直接投影都能套这一层：先让方法自己出图，
+// 再把线稿和暗块按同一套规则压上去。分层投影有自己的一套（带分段），不走这里。
+function applyLineOverlay(res, palette, opts) {
+  const lm = opts && opts.lineMask;
+  const lineOn = (opts.lineKeep ?? 0) > 0;
+  const darkOn = opts.lineDark === true;
+  if (!lm || (!lineOn && !darkOn)) return res;
+
+  const { width, height, data } = res;
+  const npix = width * height;
+  const thr = opts.lineThresh ?? 35;
+  const darkThr = opts.lineDarkThr ?? 60;
+  const light = opts.lineDir === 'light';
+  const RESPMAP = light ? lm.respLight : lm.resp;
+  const RGBMAP = light ? lm.rgbLight : lm.rgb;
+
+  let lineFinal = null;
+  if (lineOn) {
+    const raw = new Uint8Array(npix);
+    for (let p = 0; p < npix; p++) raw[p] = (RESPMAP[p] >= thr) ? 1 : 0;
+    lineFinal = opts.lineClean ? cleanLineMask(raw, width, height) : raw;
+  }
+  let darkMask = null;
+  if (darkOn) {
+    darkMask = new Uint8Array(npix);
+    for (let p = 0; p < npix; p++) darkMask[p] = (lm.minL[p] < darkThr) ? 1 : 0;
+  }
+
+  const darkL = opts.lineDarkL ?? 55;
+  const cand = [];
+  for (let i = 0; i < palette.length; i++) {
+    const L = rgbToLab(palette[i])[0];
+    if (light ? (L > darkL) : (L < darkL)) cand.push(i);
+  }
+  const use = cand.length ? cand : palette.map((_, i) => i);
+  const mix = Math.max(0, Math.min(1, opts.lineMix ?? 0));
+
+  for (let p = 0; p < npix; p++) {
+    const isLine = lineFinal && lineFinal[p];
+    const isDark = darkMask && darkMask[p];
+    if (!isLine && !isDark) continue;
+    const o = p * 4;
+    if (data[o + 3] === 0) continue;
+    const base = isLine
+      ? [RGBMAP[p * 3], RGBMAP[p * 3 + 1], RGBMAP[p * 3 + 2]]
+      : [lm.minRGB[p * 3], lm.minRGB[p * 3 + 1], lm.minRGB[p * 3 + 2]];
+    const tgt = rgbToLab([base[0] * (1 - mix) + data[o] * mix,
+                          base[1] * (1 - mix) + data[o + 1] * mix,
+                          base[2] * (1 - mix) + data[o + 2] * mix]);
+    let bi = use[0], bd = Infinity;
+    for (const ci of use) {
+      const P = rgbToLab(palette[ci]);
+      const d = (P[0] - tgt[0]) ** 2 + (P[1] - tgt[1]) ** 2 + (P[2] - tgt[2]) ** 2;
+      if (d < bd) { bd = d; bi = ci; }
+    }
+    const c = palette[bi] || [0, 0, 0];
+    data[o] = c[0]; data[o + 1] = c[1]; data[o + 2] = c[2];
+  }
+  return res;
+}
+
 // 统一入口
 function runDither(img, method, palette, D, opts) {
-  if (method === 'ordered') return orderedDither(img, palette, opts);
-  if (method === 'error_diffusion') return errorDiffusion(img, palette, opts);
-  if (method === 'barycentric') return barycentricDither(img, palette, D, opts);
-  if (method === 'projection') return projectionDither(img, palette, D, opts);
-  throw new Error('未知方法: ' + method);
+  opts = opts || {};
+  let res;
+  if (method === 'ordered') res = orderedDither(img, palette, opts);
+  else if (method === 'error_diffusion') res = errorDiffusion(img, palette, opts);
+  else if (method === 'barycentric') res = barycentricDither(img, palette, D, opts);
+  else if (method === 'projection') return projectionDither(img, palette, D, opts);
+  else if (method === 'direct') res = directProject(img, palette, D, opts);
+  else throw new Error('未知方法: ' + method);
+  // 分层投影内部自带线稿处理（含分段），其余方法统一在这里叠加
+  return applyLineOverlay(res, palette, opts);
 }
