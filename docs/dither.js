@@ -1524,7 +1524,15 @@ function projectionDither(img, palette, D, opts) {
         if (L > hi) hi = L;
       }
       const luma = 0.299 * src[o] + 0.587 * src[o + 1] + 0.114 * src[o + 2];
-      if ((hi - lo) > st.spanCap && luma > 76) { put(o, palette[nearestRGBIdx(st.c, palette)]); continue; }
+      if ((hi - lo) > st.spanCap && luma > 76) {
+        // 跨度太大就别用这组混合顶点，否则块内是「亮底 + 暗点」的棋盘格。
+        // 但也不能直接平涂投影色 —— 那样整片变成无抖动的近色块，观感上就是
+        // 「退化成直接投影」。跟重心混合的 wideMix 分支一样，改用有序抖动
+        // 在像素原色附近取近色，保留颗粒。
+        const off = (thAt(st.mv, p) - 0.5) * 64;
+        put(o, palette[nearestRGBIdx([src[o] + off, src[o + 1] + off, src[o + 2] + off], palette)]);
+        continue;
+      }
     }
     const tt = thAt(st.mv, p);
     let acc = 0, sel = st.mx.w.length - 1;

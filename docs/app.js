@@ -11,7 +11,7 @@
 // 时间戳 query 强拉一次外壳（query 变了必然绕开缓存）。同一个 build 只重试一次，
 // 免得服务器仍返回旧 HTML 时来回跳。改完 index.html 记得两处一起递增。
 // ------------------------------------------------------------
-const SHELL_BUILD = '5';
+const SHELL_BUILD = '6';
 (function healStaleShell() {
   if (window.__DITHER_SHELL__ === SHELL_BUILD) return;
   try {
@@ -95,9 +95,14 @@ function lineOpts() {
   const L = LINE_LEVELS[+($('projLineKeep') || {}).value || 0] || LINE_LEVELS[0];
   // 整片暗部（档位 4）不做清理，对上层也报告为关
   const clean = (L.keep > 0 && L.mode !== 'dark') && (+($('projLineClean') || {}).value !== 0);
-  const darkL = +($('projLineL') || {}).value || 55;
+  // 「线条识别阈值」：滑块覆盖档位预设值。细线模式看「局部暗谷响应 ≥ 阈值」，
+  // 整片暗部看「局部最暗 L* < 阈值」——同一个数值在两种模式下方向不同。
+  const thrEl = $('projLineThresh');
+  const thresh = (L.keep > 0 && thrEl) ? (+thrEl.value || L.thresh) : L.thresh;
+  // 线色亮度上限只管「候选线色」，和选区无关
+  const darkL = +($('projLineColorL') || {}).value || 55;
   const dir = ($('projLineDir') || {}).value || 'dark';
-  return { lineKeep: L.keep, lineMode: L.mode, lineThresh: L.thresh,
+  return { lineKeep: L.keep, lineMode: L.mode, lineThresh: thresh,
            lineMix: L.mix, lineClean: clean, lineDarkL: darkL, lineDir: dir,
            lineSlots: ED.lineSlots };
 }
@@ -847,7 +852,8 @@ function refreshLockState() {
   if ($('projLineClean')) $('projLineClean').disabled = locked;
   try { syncLineCleanDisabled(); } catch (e) {}
   if ($('projLineDir')) $('projLineDir').disabled = locked;
-  if ($('projLineL')) $('projLineL').disabled = locked;
+  if ($('projLineColorL')) $('projLineColorL').disabled = locked;
+  if ($('projLineThresh')) $('projLineThresh').disabled = locked || (+($('projLineKeep') || {}).value || 0) === 0;
   if ($('lockBadge')) {
     $('lockBadge').textContent = locked ? '已锁定 · ' + n + ' px 手绘' : '未锁定';
     $('lockBadge').style.color = locked ? 'var(--warn)' : '';
@@ -1911,8 +1917,20 @@ onEl('projMatrix', 'change', onParamChange);
 // 线稿保护只作用在渲染末尾（不改 plan、不改手绘归属），重画即可
 onEl('projLineKeep', 'change', () => {
   syncLineCleanDisabled();
+  syncLineThreshToLevel();
   bumpRev(); paintCanvas();
 });
+
+// 档位是「预设阈值 + 模式」，阈值滑块可以再覆盖它。切档位时把滑块重置成该档预设，
+// 否则上一档调过的数值会带到新档，看起来像档位失灵。
+function syncLineThreshToLevel() {
+  const keep = $('projLineKeep'), thr = $('projLineThresh');
+  if (!keep || !thr) return;
+  const L = LINE_LEVELS[+keep.value || 0] || LINE_LEVELS[0];
+  if (L.keep > 0) thr.value = String(L.thresh);
+  thr.disabled = layersLocked() || L.keep === 0;
+  if ($('projLineThreshVal')) $('projLineThreshVal').textContent = thr.value;
+}
 
 // 整片暗部模式下「清理」无效，直接把控件禁用，别让人以为能开
 function syncLineCleanDisabled() {
@@ -1939,11 +1957,17 @@ onEl('linePickFixed', 'click', () => {
   ED.linePick = true;
   flashHint('点画面上的某条线：选中那一段并取它的颜色');
 });
-onEl('projLineL', 'input', () => {
-  if ($('projLineLVal')) $('projLineLVal').textContent = $('projLineL').value;
-  clearTimeout(window.__lineLTimer);
-  window.__lineLTimer = setTimeout(() => { bumpRev(); paintCanvas(); }, 220);
-});
+// 线条识别阈值：改了它 mask 的判定就变了，但 lineRespMap 本身（局部暗谷响应）
+// 不随阈值变化，所以只需要重画，不用重算响应图。
+[['projLineThresh', 'projLineThreshVal'], ['projLineColorL', 'projLineColorLVal']]
+  .forEach(([id, vid]) => {
+    onEl(id, 'input', () => {
+      if ($(vid)) $(vid).textContent = $(id).value;
+      const t = '__' + id + 'Timer';
+      clearTimeout(window[t]);
+      window[t] = setTimeout(() => { bumpRev(); paintCanvas(); }, 220);
+    });
+  });
 
 // Alt 按下进取色模式；松开退出。输入框里打字不触发。
 window.addEventListener('keydown', ev => {
@@ -2507,6 +2531,7 @@ updateViewButtons();
 fitCanvas();
 refreshLockState();
 ['gradePanel', 'edgePanel', 'slotDialog', 'prePanel'].forEach(makePanelDraggable);
+syncLineThreshToLevel();      // 阈值滑块初值对齐当前档位
 
 // 外壳版本水印：一眼分辨跑的是新版还是缓存里的旧页面
 (function stampShell() {

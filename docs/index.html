@@ -8,8 +8,8 @@
   <!-- 外壳版本号：必须与 app.js 顶部的 SHELL_BUILD 相同。
        改完页面结构后跑 `python docs/update_asset_version.py --bump`，两处一起递增。
        app.js 拿它判断用户是不是加载到了缓存的旧 HTML。 -->
-  <script>window.__DITHER_SHELL__ = '5';</script>
-  <link rel="stylesheet" href="style.css?v=264a0a42">
+  <script>window.__DITHER_SHELL__ = '6';</script>
+  <link rel="stylesheet" href="style.css?v=98cbfab6">
 </head>
 <body>
   <header>
@@ -216,10 +216,16 @@
               </select>
             </div>
             <div class="row" style="margin-top:4px">
+              <span class="hint" style="min-width:76px">线条识别阈值</span>
+              <input type="range" id="projLineThresh" min="15" max="90" step="1" value="55" style="flex:1"
+                     title="决定哪些像素算线。细线模式：局部暗谷响应 ≥ 阈值才收，越大收得越少；整片暗部：局部最暗 L* &lt; 阈值才算暗区，越大暗区越大。切档位会把这里重置成该档默认值">
+              <span class="hint" id="projLineThreshVal" style="min-width:34px;text-align:right">55</span>
+            </div>
+            <div class="row" style="margin-top:4px">
               <span class="hint" style="min-width:76px">线色亮度上限</span>
-              <input type="range" id="projLineL" min="15" max="90" step="1" value="55" style="flex:1"
-                     title="只筛候选线色：暗线取 L* 更低的板内色，亮线取更高的。它不改变哪些像素被判成线——选区范围由上面的档位（弱 / 中 / 强 / 整片暗部）决定">
-              <span class="hint" id="projLineLVal" style="min-width:34px;text-align:right">55</span>
+              <input type="range" id="projLineColorL" min="15" max="90" step="1" value="55" style="flex:1"
+                     title="只筛候选线色：暗线取 L* 更低的板内色，亮线取更高的。不影响哪些像素被判成线">
+              <span class="hint" id="projLineColorLVal" style="min-width:34px;text-align:right">55</span>
             </div>
             <div class="row" style="margin-top:4px">
               <span class="hint" id="lineInfo">线 0 段</span>
@@ -545,10 +551,10 @@
   <div class="hint">拖动面板上的细线调整分界；两端固定。背景直方图标出像素落在哪。</div>
 </div>
 
-  <script src="delaunay.js?v=264a0a42"></script>
-  <script src="dither.js?v=264a0a42"></script>
-  <script src="textpixel.js?v=264a0a42"></script>
-  <script src="app.js?v=264a0a42"></script>
+  <script src="delaunay.js?v=98cbfab6"></script>
+  <script src="dither.js?v=98cbfab6"></script>
+  <script src="textpixel.js?v=98cbfab6"></script>
+  <script src="app.js?v=98cbfab6"></script>
 
 <div id="pickPalette" class="pick-palette hidden"></div>
 <!-- 外壳版本水印：报「看不到某功能」时先看这里的数字，对不上就是缓存了旧 HTML -->
