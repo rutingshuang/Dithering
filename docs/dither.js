@@ -54,12 +54,14 @@ function nearestRGBIdx(p, palette) {
   return best;
 }
 
-function nearestLabIdx(p, labPalette) {
+function nearestLabIdx(p, labPalette, w) {
   const lp = rgbToLab([p[0], p[1], p[2]]);
+  const wl = w ? w[0] : 1, wa = w ? w[1] : 1, wb = w ? w[2] : 1;
   let best = 0, bestD = Infinity;
   for (let i = 0; i < labPalette.length; i++) {
     const q = labPalette[i];
-    const d = (lp[0] - q[0]) ** 2 + (lp[1] - q[1]) ** 2 + (lp[2] - q[2]) ** 2;
+    // 三个通道可以分别加权：调高 L 权重更保明暗，调高 a/b 更保色彩
+    const d = wl * (lp[0] - q[0]) ** 2 + wa * (lp[1] - q[1]) ** 2 + wb * (lp[2] - q[2]) ** 2;
     if (d < bestD) { bestD = d; best = i; }
   }
   return best;
@@ -1620,7 +1622,7 @@ function directProject(img, palette, D, opts) {
     const o = i * 4;
     if (data[o + 3] === 0) { out[o + 3] = 0; continue; }
     const c = [data[o], data[o + 1], data[o + 2]];
-    const idx = useLab ? nearestLabIdx(c, palLab) : nearestRGBIdx(c, palette);
+    const idx = useLab ? nearestLabIdx(c, palLab, opts.labWeights) : nearestRGBIdx(c, palette);
     const p = palette[idx];
     out[o] = p[0]; out[o + 1] = p[1]; out[o + 2] = p[2]; out[o + 3] = 255;
   }

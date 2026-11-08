@@ -80,7 +80,13 @@ function gatherOpts() {
              edCap: off ? 0 : (+($('edCap') || {}).value || 270) });
   }
   if (m === 'direct') {
-    return Object.assign(lo, { colorSpace: ($('directSpace') || {}).value || 'RGB' });
+    const wl = +($('labWL') || {}).value, wa = +($('labWA') || {}).value,
+          wb = +($('labWB') || {}).value;
+    return Object.assign(lo, {
+      colorSpace: ($('directSpace') || {}).value || 'RGB',
+      labWeights: [Number.isFinite(wl) ? wl : 1, Number.isFinite(wa) ? wa : 1,
+                   Number.isFinite(wb) ? wb : 1],
+    });
   }
   if (m === 'projection') {
     const black = +($('gradeBlack') || {}).value || 0;
@@ -1807,6 +1813,13 @@ onEl('edCapOff', 'change', () => {
 });
 ['matrix', 'colorSpace', 'filter', 'baryMatrix', 'projEdge', 'projSpace', 'directSpace']
   .forEach(id => onEl(id, 'change', onParamChange));
+[['labWL','labWLVal'], ['labWA','labWAVal'], ['labWB','labWBVal']].forEach(([id, vid]) => {
+  onEl(id, 'input', () => {
+    if ($(vid)) $(vid).textContent = (+$(id).value).toFixed(2);
+    clearTimeout(window.__labWTimer);
+    window.__labWTimer = setTimeout(onParamChange, 220);
+  });
+});
 
 // 数字输入框：input 事件防抖生效（边输入边看效果），change 立刻生效
 let paramTimer = null;

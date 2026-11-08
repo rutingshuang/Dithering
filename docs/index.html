@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调色板图像抖动工具</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=a0d1c6eb">
+  <link rel="stylesheet" href="style.css?v=0fcfaff4">
 </head>
 <body>
   <header>
@@ -99,6 +99,18 @@
               <option value="RGB" selected>RGB</option>
               <option value="Lab">Lab</option>
             </select>
+          </div>
+          <div class="field">
+            <label>L* <span class="val" id="labWLVal">1.00</span></label>
+            <input type="range" id="labWL" min="0" max="4" step="0.1" value="1">
+          </div>
+          <div class="field">
+            <label>a* <span class="val" id="labWAVal">1.00</span></label>
+            <input type="range" id="labWA" min="0" max="4" step="0.1" value="1">
+          </div>
+          <div class="field">
+            <label>b* <span class="val" id="labWBVal">1.00</span></label>
+            <input type="range" id="labWB" min="0" max="4" step="0.1" value="1">
           </div>
         </div>
 
@@ -493,10 +505,10 @@
   <div class="hint">拖动面板上的细线调整分界；两端固定。背景直方图标出像素落在哪。</div>
 </div>
 
-  <script src="delaunay.js?v=a0d1c6eb"></script>
-  <script src="dither.js?v=a0d1c6eb"></script>
-  <script src="textpixel.js?v=a0d1c6eb"></script>
-  <script src="app.js?v=a0d1c6eb"></script>
+  <script src="delaunay.js?v=0fcfaff4"></script>
+  <script src="dither.js?v=0fcfaff4"></script>
+  <script src="textpixel.js?v=0fcfaff4"></script>
+  <script src="app.js?v=0fcfaff4"></script>
 
 <div id="pickPalette" class="pick-palette hidden"></div>
 </body>
