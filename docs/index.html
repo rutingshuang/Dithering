@@ -50,7 +50,10 @@
       </section>
 
       <section class="card">
-        <div class="card-head"><h3 data-i18n="抖动方法">抖动方法</h3></div>
+        <div class="card-head">
+          <h3 data-i18n="抖动方法">抖动方法</h3>
+          <button class="mini" id="openPre" data-i18n="预处理">预处理</button>
+        </div>
         <select id="method">
           <option value="projection" selected data-i18n="分层投影混色">分层投影混色</option>
           <option value="barycentric" data-i18n="重心混合">重心混合</option>
@@ -270,7 +273,6 @@
       <section class="card">
         <div class="card-head">
           <h3>图层 <span class="badge" id="bandCount">-</span></h3>
-          <button class="mini" id="openPre" data-i18n="预处理">预处理</button>
           <button class="mini" id="openEdge" data-i18n="阈值…">阈值…</button>
         </div>
         <div class="band-list" id="bandList"></div>
@@ -279,7 +281,7 @@
       <section class="card">
         <div class="card-head">
           <h3 data-i18n="色阶">色阶</h3>
-          <button class="mini" id="openGrade" data-i18n="调整…">调整…</button>
+          <span class="hint" style="font-size:11px">已并入「预处理」</span>
         </div>
         <div class="hint" id="gradeSummary">黑场 0.00 / 白场 1.00 / 中间调 1.00</div>
         <div class="row">
