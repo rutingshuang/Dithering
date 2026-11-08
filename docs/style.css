@@ -447,3 +447,9 @@ body.editing #dstCanvas { cursor: crosshair; }
 .pre-panel { left: auto; right: 18px; top: 72px; bottom: auto; transform: none; width: 300px; }
 .pre-panel .grade-row { padding: 4px 14px; }
 .pre-panel .grade-name { width: 58px; }
+
+/* 外壳版本水印：不挡操作，只用来判断是不是缓存了旧 HTML */
+.shell-tag {
+  position: fixed; right: 10px; bottom: 6px; z-index: 60;
+  font-size: 11px; color: var(--text-dim); opacity: .5; pointer-events: none;
+}

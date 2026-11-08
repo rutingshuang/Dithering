@@ -2,6 +2,25 @@
 // app.js — 网页版 UI 逻辑
 // 第一部分：公共状态、参数收集、尺寸换算
 // ============================================================
+
+// ------------------------------------------------------------
+// 外壳新鲜度自检
+// index.html 是入口，没法给自己带内容哈希，浏览器和 GitHub Pages 都会缓存它。
+// 一旦缓存住旧 HTML，新加的入口压根不在 DOM 里，用户看到的就是"改了但看不到"。
+// 这里比对 HTML 内联的 __DITHER_SHELL__ 与本文件的 SHELL_BUILD：不一致就带
+// 时间戳 query 强拉一次外壳（query 变了必然绕开缓存）。同一个 build 只重试一次，
+// 免得服务器仍返回旧 HTML 时来回跳。改完 index.html 记得两处一起递增。
+// ------------------------------------------------------------
+const SHELL_BUILD = '3';
+(function healStaleShell() {
+  if (window.__DITHER_SHELL__ === SHELL_BUILD) return;
+  try {
+    if (sessionStorage.getItem('dither.shellHeal') === SHELL_BUILD) return;
+    sessionStorage.setItem('dither.shellHeal', SHELL_BUILD);
+  } catch (e) { /* 隐私模式禁用 storage 时直接放行，不拦页面 */ }
+  location.replace(location.pathname + '?shell=' + Date.now());
+})();
+
 const D = DITHER_DATA;
 const palette = D.palette;
 let srcData = null;          // 原图 ImageData（未缩放）
@@ -2454,6 +2473,16 @@ updateViewButtons();
 fitCanvas();
 refreshLockState();
 ['gradePanel', 'edgePanel', 'slotDialog', 'prePanel'].forEach(makePanelDraggable);
+
+// 外壳版本水印：一眼分辨跑的是新版还是缓存里的旧页面
+(function stampShell() {
+  const paint = () => {
+    const tag = $('shellTag');
+    if (tag) tag.textContent = 'shell ' + (window.__DITHER_SHELL__ || '?') + ' · js ' + SHELL_BUILD;
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', paint);
+  else paint();
+})();
 
 // ---------- 页签切换：图像抖动 / 汉字像素图 ----------
 document.querySelectorAll('.tab').forEach(btn => {
