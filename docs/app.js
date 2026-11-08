@@ -55,19 +55,32 @@ function resizeData(imgData, tw, th) {
 }
 
 // ---------- 参数收集 ----------
+// 线稿参数对**所有方法**生效，所以在这里统一算，不再塞进 projection 分支
+function lineOpts() {
+  const L = LINE_LEVELS[+($('projLineKeep') || {}).value || 0] || LINE_LEVELS[0];
+  // 整片暗部（档位 4）不做清理，对上层也报告为关
+  const clean = (L.keep > 0 && L.mode !== 'dark') && (+($('projLineClean') || {}).value !== 0);
+  const darkL = +($('projLineL') || {}).value || 55;
+  const dir = ($('projLineDir') || {}).value || 'dark';
+  return { lineKeep: L.keep, lineMode: L.mode, lineThresh: L.thresh,
+           lineMix: L.mix, lineClean: clean, lineDarkL: darkL, lineDir: dir,
+           lineSlots: ED.lineSlots };
+}
+
 function gatherOpts() {
   const m = $('method').value;
+  const lo = lineOpts();
   if (m === 'ordered') {
-    return { matrix: $('matrix').value, strength: +$('strength').value,
-             colorSpace: $('colorSpace').value };
+    return Object.assign(lo, { matrix: $('matrix').value, strength: +$('strength').value,
+             colorSpace: $('colorSpace').value });
   }
   if (m === 'error_diffusion') {
     const off = $('edCapOff') && $('edCapOff').checked;
-    return { filter: $('filter').value, alpha: +$('alpha').value,
-             edCap: off ? 0 : (+($('edCap') || {}).value || 270) };
+    return Object.assign(lo, { filter: $('filter').value, alpha: +$('alpha').value,
+             edCap: off ? 0 : (+($('edCap') || {}).value || 270) });
   }
   if (m === 'direct') {
-    return { colorSpace: 'RGB' };
+    return Object.assign(lo, { colorSpace: 'RGB' });
   }
   if (m === 'projection') {
     const black = +($('gradeBlack') || {}).value || 0;
@@ -80,23 +93,13 @@ function gatherOpts() {
       edgeMode: $('projEdge').value,
       clusterSpace: $('projSpace').value,
       matrix: $('projMatrix').value || 'bayer4',
-      ...(() => {
-        const L = LINE_LEVELS[+($('projLineKeep') || {}).value || 0] || LINE_LEVELS[0];
-        // 整片暗部（档位 4）不做清理，同时对上层也报告为关
-        const clean = (L.keep > 0 && L.mode !== 'dark')
-          && (+($('projLineClean') || {}).value !== 0);
-        const darkL = +($('projLineL') || {}).value || 55;
-        const dir = ($('projLineDir') || {}).value || 'dark';
-        return { lineKeep: L.keep, lineMode: L.mode, lineThresh: L.thresh,
-                 lineMix: L.mix, lineClean: clean, lineDarkL: darkL, lineDir: dir,
-                 lineSlots: ED.lineSlots };
-      })(),
+      ...lo,
       black: Math.min(black, white - 0.02),
       white: Math.max(white, black + 0.02),
       gamma,
     };
   }
-  return {
+  return Object.assign(lo, {
     matrix: $('baryMatrix').value,
     strength: +$('baryStrength').value,
     gamut: $('gamut').checked,
@@ -105,7 +108,7 @@ function gatherOpts() {
     projLab: $('projLab').checked,
     refine: +$('refine').value,
     mixSpan: +$('mixSpan').value,
-  };
+  });
 }
 
 // 需要 Delaunay 数据的方法（全选时用离线预计算，子集时运行时构建）
