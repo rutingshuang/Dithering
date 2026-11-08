@@ -11,7 +11,7 @@
 // 时间戳 query 强拉一次外壳（query 变了必然绕开缓存）。同一个 build 只重试一次，
 // 免得服务器仍返回旧 HTML 时来回跳。改完 index.html 记得两处一起递增。
 // ------------------------------------------------------------
-const SHELL_BUILD = '3';
+const SHELL_BUILD = '4';
 (function healStaleShell() {
   if (window.__DITHER_SHELL__ === SHELL_BUILD) return;
   try {
@@ -693,9 +693,13 @@ function mainResult() {
   // 非编辑器模式单击画布 = 在原图/成品之间切换
   if (ED.showSrc && !ED.editing) {
     const [tw, th] = computeTarget(srcData.width, srcData.height);
-    const sk = 'src@' + tw + 'x' + th + '@' + (srcData.__rev || 0);
+    const po = preOpts();
+    // 「原图」这一屏展示的是抖动前的**输入**，所以必须跟着预处理走；
+    // 文件里那张没动过的原片去左栏缩略图看。
+    const sk = 'src@' + tw + 'x' + th + '@' + (srcData.__rev || 0) + '@' + JSON.stringify(po);
     if (mainCache.key === sk && mainCache.im) return mainCache.im;
-    const s = resizeData(srcData, tw, th);
+    let s = resizeData(srcData, tw, th);
+    if (!preIsIdentity(po)) s = preprocessImage(s, po);
     mainCache = { key: sk, im: s };
     return s;
   }
@@ -1015,7 +1019,7 @@ function paintCanvas() {
   }
   if ($('stageHint')) {
     if (ED.showSrc && !ED.editing) {
-      $('stageHint').textContent = '原图（再单击一次切回成品）';
+      $('stageHint').textContent = '原图（已应用预处理，再单击切回成品）· 未处理的原片见左栏缩略图';
     } else {
       $('stageHint').textContent = ED.view === 'result'
         ? hints.result + (ED.editing ? '' : ' · 单击看原图')
