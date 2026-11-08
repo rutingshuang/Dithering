@@ -11,7 +11,7 @@
 // 时间戳 query 强拉一次外壳（query 变了必然绕开缓存）。同一个 build 只重试一次，
 // 免得服务器仍返回旧 HTML 时来回跳。改完 index.html 记得两处一起递增。
 // ------------------------------------------------------------
-const SHELL_BUILD = '6';
+const SHELL_BUILD = '7';
 (function healStaleShell() {
   if (window.__DITHER_SHELL__ === SHELL_BUILD) return;
   try {
@@ -99,11 +99,10 @@ function lineOpts() {
   // 整片暗部看「局部最暗 L* < 阈值」——同一个数值在两种模式下方向不同。
   const thrEl = $('projLineThresh');
   const thresh = (L.keep > 0 && thrEl) ? (+thrEl.value || L.thresh) : L.thresh;
-  // 线色亮度上限只管「候选线色」，和选区无关
-  const darkL = +($('projLineColorL') || {}).value || 55;
   const dir = ($('projLineDir') || {}).value || 'dark';
+  // 线色亮度上限固定用 55（曾经暴露成滑块，但多数图上最近线色根本不变，属于无效控件）
   return { lineKeep: L.keep, lineMode: L.mode, lineThresh: thresh,
-           lineMix: L.mix, lineClean: clean, lineDarkL: darkL, lineDir: dir,
+           lineMix: L.mix, lineClean: clean, lineDir: dir,
            lineSlots: ED.lineSlots };
 }
 
@@ -852,7 +851,6 @@ function refreshLockState() {
   if ($('projLineClean')) $('projLineClean').disabled = locked;
   try { syncLineCleanDisabled(); } catch (e) {}
   if ($('projLineDir')) $('projLineDir').disabled = locked;
-  if ($('projLineColorL')) $('projLineColorL').disabled = locked;
   if ($('projLineThresh')) $('projLineThresh').disabled = locked || (+($('projLineKeep') || {}).value || 0) === 0;
   if ($('lockBadge')) {
     $('lockBadge').textContent = locked ? '已锁定 · ' + n + ' px 手绘' : '未锁定';
@@ -1959,15 +1957,14 @@ onEl('linePickFixed', 'click', () => {
 });
 // 线条识别阈值：改了它 mask 的判定就变了，但 lineRespMap 本身（局部暗谷响应）
 // 不随阈值变化，所以只需要重画，不用重算响应图。
-[['projLineThresh', 'projLineThreshVal'], ['projLineColorL', 'projLineColorLVal']]
-  .forEach(([id, vid]) => {
-    onEl(id, 'input', () => {
-      if ($(vid)) $(vid).textContent = $(id).value;
-      const t = '__' + id + 'Timer';
-      clearTimeout(window[t]);
-      window[t] = setTimeout(() => { bumpRev(); paintCanvas(); }, 220);
-    });
+(function bindLineThresh() {
+  const id = 'projLineThresh', vid = 'projLineThreshVal';
+  onEl(id, 'input', () => {
+    if ($(vid)) $(vid).textContent = $(id).value;
+    clearTimeout(window.__lineThreshTimer);
+    window.__lineThreshTimer = setTimeout(() => { bumpRev(); paintCanvas(); }, 220);
   });
+})();
 
 // Alt 按下进取色模式；松开退出。输入框里打字不触发。
 window.addEventListener('keydown', ev => {
