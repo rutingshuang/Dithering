@@ -444,9 +444,13 @@ body.editing #dstCanvas { cursor: crosshair; }
 
 
 /* 预处理浮窗：默认贴右上角，可拖动（位置会被记住） */
-.pre-panel { left: auto; right: 18px; top: 72px; bottom: auto; transform: none; width: 300px; }
+/* 预处理浮窗：默认展开，位置要让开 stage-actions 那一排按钮（进入分层编辑器在这里） */
+.pre-panel { left: auto; right: 18px; top: 166px; bottom: auto; transform: none; width: 300px; }
 .pre-panel .grade-row { padding: 4px 14px; }
 .pre-panel .grade-name { width: 58px; }
+
+/* 浮窗万一被拖到按钮上，按钮也要压在它上面 */
+.stage-actions { position: relative; z-index: 90; }
 
 /* 外壳版本水印：不挡操作，只用来判断是不是缓存了旧 HTML */
 .shell-tag {

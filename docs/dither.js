@@ -1473,7 +1473,7 @@ function projectionDither(img, palette, D, opts) {
           mx0 = rawMix ? restrictMix(rawMix, mixK, palette, 60) : null;
         }
         st = { kind: 'auto', c: band.projRGB[bj], method: 'mix', sv: null,
-               mx: mx0, mv: mv0, spanCap: 0, edKey: null };
+               mx: mx0, mv: mv0, spanCap: opts.mixSpan ?? 0, edKey: null };
         autoStateOf.set(key, st);
       }
     }

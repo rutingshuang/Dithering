@@ -11,7 +11,7 @@
 // 时间戳 query 强拉一次外壳（query 变了必然绕开缓存）。同一个 build 只重试一次，
 // 免得服务器仍返回旧 HTML 时来回跳。改完 index.html 记得两处一起递增。
 // ------------------------------------------------------------
-const SHELL_BUILD = '4';
+const SHELL_BUILD = '5';
 (function healStaleShell() {
   if (window.__DITHER_SHELL__ === SHELL_BUILD) return;
   try {
@@ -134,6 +134,9 @@ function gatherOpts() {
       edgeMode: $('projEdge').value,
       clusterSpace: $('projSpace').value,
       matrix: $('projMatrix').value || 'bayer4',
+      // 混合跨度上限：和重心混合同一套语义（顶点 RGB 亮度跨度超过它就退回单一近色），
+      // 只是分层投影的混合顶点来自每一层的调色板聚类结果
+      mixSpan: Math.max(0, Math.min(60, +($('projMixSpan') || {}).value || 0)),
       ...lo,
       black: Math.min(black, white - 0.02),
       white: Math.max(white, black + 0.02),
@@ -246,16 +249,29 @@ function slotColor(sv) {
   return sv.color || null;
 }
 
+// 面板的「混合跨度上限」是全局混合行为：自动投影读 gatherOpts()，编辑器读各槽的
+// sv.mixSpan。两者必须同值，否则一进编辑器成品就跳变（槽是建槽时快照的，改面板
+// 不会重建槽）。所以面板一变就同步下去。
+function syncProjMixSpan() {
+  const v = +($('projMixSpan') || {}).value || 0;
+  for (const bi in ED.slots) {
+    const arr = ED.slots[bi];
+    if (arr) for (const sv of arr) sv.mixSpan = v;
+  }
+  return v;
+}
+
 // used 语义已改成「槽只作用于手绘像素」，所以不再需要 used 参与自动分配；
 // 保留字段是为了工程文件兼容与「待涂」提示。
 // 这些默认值必须与「自动投影」的渲染路径一致（projLab=false 走与 mixWeights 相同的
-// RGB 投影、mixSpan=0 不做跨度截断），否则一进编辑器、槽一建出来，成品就变了。
+// RGB 投影、混合跨度同面板），否则一进编辑器、槽一建出来，成品就变了。
 function slotDefaults(color, uid) {
   return { uid: uid ?? ED.uidSeq++,
            color: (color === undefined || color === null) ? 0 : color,
            method: 'mix', matrix: 'bayer4', matrixAuto: true, strength: 64,
            filter: 'FS', alpha: 1, projLab: false, refine: 2,
-           mixSpan: 0, gamut: true, minWeight: 0, used: false };
+           mixSpan: +($('projMixSpan') || {}).value || 0,
+           gamut: true, minWeight: 0, used: false };
 }
 
 // ---------- 参数指纹 ----------
@@ -523,14 +539,25 @@ function updateUndoButtons() {
 }
 
 // ---------- plan 构建 ----------
-// 线稿 mask 只跟原图 + 目标尺寸 + 阈值有关，缓存起来，改配色参数时不用重算
+// 线稿 mask 缓存。判据是「抖动前输入图」上的局部暗谷，所以要跟着预处理走：
+// 把亮度压下去，暗谷会变多、整片暗区的范围也就该跟着变大。
+// 预处理在全分辨率上做，分格半径才和不动预处理时一致。
 let _lineMaskState = { key: null, lm: null };
 let imgRev = 0;              // 每次载入新图自增，参与所有按图缓存的 key
 function lineMaskCache(tw, th) {
   if (!srcData) return null;
-  const key = [srcData.__rev || 0, tw, th].join('|');
+  const po = preOpts();
+  const pSig = preIsIdentity(po) ? '' : JSON.stringify(po);
+  const key = [srcData.__rev || 0, tw, th, pSig].join('|');
   if (_lineMaskState.key !== key) {
-    _lineMaskState = { key, lm: lineRespMap(srcData, tw, th) };
+    let base = srcData;
+    if (pSig) {
+      base = preprocessImage(
+        { width: srcData.width, height: srcData.height, data: srcData.data }, po);
+      // LINE_CACHE 按 __rev 做键，派生图要自带一个，别和原片的条目撞车
+      base.__rev = String(srcData.__rev || 0) + '#' + pSig;
+    }
+    _lineMaskState = { key, lm: lineRespMap(base, tw, th) };
   }
   return _lineMaskState.lm;
 }
@@ -1736,6 +1763,8 @@ function enterEditorMode() {
   for (let b = 0; b < ED.plan.nBands; b++) {
     if (!ED.slots[b] || !ED.slots[b].length) importAutoSlots(b, true);
   }
+  // 已存在的槽可能还带着旧快照，进编辑器统一成面板值，成品才不会一进门就变
+  syncProjMixSpan();
   if (ED.slots[ED.curBand] && ED.slots[ED.curBand].length) {
     selectSlot(ED.slots[ED.curBand][0].uid);
   }
@@ -1840,13 +1869,14 @@ function bindRange(id, valId, digits) {
 
 ['strength:strengthVal', 'baryStrength:baryStrengthVal', 'alpha:alphaVal',
  'minWeight:minWeightVal', 'edgeGuard:edgeGuardVal', 'refine:refineVal',
- 'mixSpan:mixSpanVal'].forEach(pair => {
+ 'mixSpan:mixSpanVal', 'projMixSpan:projMixSpanVal'].forEach(pair => {
   const [id, val] = pair.split(':');
   bindRange(id, val, id === 'minWeight' || id === 'alpha' ? 2 : 0);
 });
 
 ['strength', 'baryStrength', 'alpha', 'minWeight', 'edgeGuard', 'refine', 'mixSpan']
   .forEach(id => onEl(id, 'change', scheduleProcess));
+onEl('projMixSpan', 'change', () => { syncProjMixSpan(); scheduleProcess(); });
 onEl('edCap', 'input', () => {
   if ($('edCapVal')) $('edCapVal').textContent = $('edCap').value;
   clearTimeout(window.__edCapTimer);

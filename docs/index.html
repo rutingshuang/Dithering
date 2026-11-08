@@ -8,8 +8,8 @@
   <!-- 外壳版本号：必须与 app.js 顶部的 SHELL_BUILD 相同。
        改完页面结构后跑 `python docs/update_asset_version.py --bump`，两处一起递增。
        app.js 拿它判断用户是不是加载到了缓存的旧 HTML。 -->
-  <script>window.__DITHER_SHELL__ = '4';</script>
-  <link rel="stylesheet" href="style.css?v=4f5b470a">
+  <script>window.__DITHER_SHELL__ = '5';</script>
+  <link rel="stylesheet" href="style.css?v=264a0a42">
 </head>
 <body>
   <header>
@@ -170,6 +170,11 @@
             </select>
           </div>
           <div class="field">
+            <label>混合跨度上限 <span class="val" id="projMixSpanVal">35</span></label>
+            <input type="range" id="projMixSpan" min="0" max="60" step="5" value="35"
+                   title="0 = 不截断。混合顶点的亮度跨度超过它就退回单一近色，压掉亮区「亮底+暗点」的棋盘格">
+          </div>
+          <div class="field">
             <label data-i18n="分层依据">分层依据</label>
             <select id="projEdge">
               <option value="linear" data-i18n="绝对明度">绝对明度</option>
@@ -211,8 +216,9 @@
               </select>
             </div>
             <div class="row" style="margin-top:4px">
+              <span class="hint" style="min-width:76px">线色亮度上限</span>
               <input type="range" id="projLineL" min="15" max="90" step="1" value="55" style="flex:1"
-                     title="线色亮度阈值 L*：暗线取更暗的色，亮线取更亮的色">
+                     title="只筛候选线色：暗线取 L* 更低的板内色，亮线取更高的。它不改变哪些像素被判成线——选区范围由上面的档位（弱 / 中 / 强 / 整片暗部）决定">
               <span class="hint" id="projLineLVal" style="min-width:34px;text-align:right">55</span>
             </div>
             <div class="row" style="margin-top:4px">
@@ -539,10 +545,10 @@
   <div class="hint">拖动面板上的细线调整分界；两端固定。背景直方图标出像素落在哪。</div>
 </div>
 
-  <script src="delaunay.js?v=4f5b470a"></script>
-  <script src="dither.js?v=4f5b470a"></script>
-  <script src="textpixel.js?v=4f5b470a"></script>
-  <script src="app.js?v=4f5b470a"></script>
+  <script src="delaunay.js?v=264a0a42"></script>
+  <script src="dither.js?v=264a0a42"></script>
+  <script src="textpixel.js?v=264a0a42"></script>
+  <script src="app.js?v=264a0a42"></script>
 
 <div id="pickPalette" class="pick-palette hidden"></div>
 <!-- 外壳版本水印：报「看不到某功能」时先看这里的数字，对不上就是缓存了旧 HTML -->
