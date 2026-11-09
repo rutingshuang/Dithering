@@ -527,6 +527,28 @@ function ensureLabData(D) {
   D.labL = labPoints.map(c => c[0]);
 }
 
+// 每个四面体的 4 个顶点按 L* 升序排列。Delaunay 输出的顶点顺序是几何产物，
+// 实测 295 个四面体里只有 13 个恰好按亮度递增，像 [66, 81, 91, 0] 这种一路升到
+// 最亮再突然跳到纯黑。累积阈值选色时，这个顺序就是"阈值从小到大依次选谁"，
+// 顺序乱 → 相邻阈值挑到亮度差一大截的顶点 → 矩阵再规律也像随机噪点。
+// 排序不改变各顶点被选中的概率（权重不变），只把空间模式理顺，是纯收益。
+function ensureTetOrder(D) {
+  if (D.tetOrder) return D.tetOrder;
+  const L = D.labL || (D.labL = D.palette.map(c => rgbToLab(c)[0]));
+  D.tetOrder = D.tetras.map(t => [0, 1, 2, 3].sort((a, b) => L[t[a]] - L[t[b]]));
+  return D.tetOrder;
+}
+
+// 混合顶点同样要按 L* 升序，理由同 ensureTetOrder：累积阈值选色时，
+// 顶点顺序就是"阈值从小到大依次选谁"。分层投影的 mx.idx 来自聚类，顺序是乱的。
+// 排序只重排 {idx, w} 的配对，各顶点被选中的概率（= 权重）不变。
+function sortMixByL(mx, D) {
+  if (!mx || !mx.idx || mx.idx.length < 3) return mx;
+  const L = D.labL || (D.labL = D.palette.map(c => rgbToLab(c)[0]));
+  const ord = mx.idx.map((_, k) => k).sort((a, b) => L[mx.idx[a]] - L[mx.idx[b]]);
+  return { idx: ord.map(k => mx.idx[k]), w: ord.map(k => mx.w[k]) };
+}
+
 // 重心混合
 function barycentricDither(img, palette, D, opts) {
   opts = opts || {};
@@ -542,6 +564,7 @@ function barycentricDither(img, palette, D, opts) {
   const mixSpan = opts.mixSpan ?? 35;           // 凸包内混合允许的最大顶点亮度跨度
   const nearMax = 0.9;
   if (projLab) ensureLabData(D);
+  const tetOrder = ensureTetOrder(D);   // 顶点按 L* 升序，阈值选色才和亮度单调对应
   const gsize = D.gridSize, step = 256 / gsize;
   const edge = edgeGuard > 0 ? labEdgeMap(img) : null;
   const out = new Uint8ClampedArray(data.length);
@@ -614,10 +637,12 @@ function barycentricDither(img, palette, D, opts) {
           const idx = nearestRGBIdx(q, palette);
           out[i]=palette[idx][0]; out[i+1]=palette[idx][1]; out[i+2]=palette[idx][2];
         } else {
-          // 阈值选色
-          const cum = [w[0], w[0]+w[1], w[0]+w[1]+w[2], 1.0];
-          let sel = 3;
-          for (let k = 0; k < 4; k++) if (cum[k] >= tt) { sel = k; break; }
+          // 阈值选色：按 L* 升序累积，阈值一路上升时颜色也一路变亮，
+          // 块内才会呈现矩阵本身的规律，而不是亮度乱跳的噪点
+          const ord = tetOrder[t];
+          const cum = [w[ord[0]], w[ord[0]]+w[ord[1]], w[ord[0]]+w[ord[1]]+w[ord[2]], 1.0];
+          let sel = ord[3];
+          for (let k = 0; k < 4; k++) if (cum[k] >= tt) { sel = ord[k]; break; }
           const c = palette[D.tetras[t][sel]];
           out[i]=c[0]; out[i+1]=c[1]; out[i+2]=c[2];
         }
@@ -1336,10 +1361,11 @@ function slotState(sv, pal, D, mvOf, width, kind, mixK, defaultMatrix) {
     const k = Math.min(4, Math.max(2, sv.mixColors ?? mixK ?? 4));
     st.mv = mvOf(matName, 0);
     if (k === 2) {
-      st.mx = pairMix2(c, D, st.mv.m * st.mv.m, 0.10);
+      st.mx = sortMixByL(pairMix2(c, D, st.mv.m * st.mv.m, 0.10), D);
     } else {
-      st.mx = pruneMix(restrictMix(slotMixWeights(c, D, sv), k, pal, sv.mixSpanLimit ?? 60),
-                       sv.minWeight ?? 0);
+      st.mx = sortMixByL(
+        pruneMix(restrictMix(slotMixWeights(c, D, sv), k, pal, sv.mixSpanLimit ?? 60),
+                 sv.minWeight ?? 0), D);
     }
     st.spanCap = sv.mixSpan ?? 0;
   } else if (method === 'ordered') {
@@ -1467,10 +1493,10 @@ function projectionDither(img, palette, D, opts) {
         let mx0 = null;
         if (mixK === 2) {
           // 2 色：直接按图案档位枚举色对，不再从四面体权重里截断
-          mx0 = pairMix2(band.projRGB[bj], D, lv0, opts.mix2Penalty ?? 0.10);
+          mx0 = sortMixByL(pairMix2(band.projRGB[bj], D, lv0, opts.mix2Penalty ?? 0.10), D);
         } else {
           const rawMix = (band.mixes && band.mixes[bj]) || null;
-          mx0 = rawMix ? restrictMix(rawMix, mixK, palette, 60) : null;
+          mx0 = rawMix ? sortMixByL(restrictMix(rawMix, mixK, palette, 60), D) : null;
         }
         st = { kind: 'auto', c: band.projRGB[bj], method: 'mix', sv: null,
                mx: mx0, mv: mv0, spanCap: opts.mixSpan ?? 0, edKey: null };
