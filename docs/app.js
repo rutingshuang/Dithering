@@ -11,7 +11,7 @@
 // 时间戳 query 强拉一次外壳（query 变了必然绕开缓存）。同一个 build 只重试一次，
 // 免得服务器仍返回旧 HTML 时来回跳。改完 index.html 记得两处一起递增。
 // ------------------------------------------------------------
-const SHELL_BUILD = '7';
+const SHELL_BUILD = '8';
 (function healStaleShell() {
   if (window.__DITHER_SHELL__ === SHELL_BUILD) return;
   try {
@@ -1802,6 +1802,63 @@ function exitEditorMode() {
 // ============================================================
 const SLOT_FILTERS = ['FS', 'Jarvis', 'Stucki'];
 
+// ---------- 整层套用：把方法与抖动参数一次铺到本层所有颜色 ----------
+// 只动方法/矩阵/强度/扩散核，不动颜色、不动手绘标签。
+function fillBulkMatrixNames() {
+  const sel = $('bulkMatrixName');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = MATRIX_NAMES.map(([k, label]) => `<option value="${k}">${label}</option>`).join('');
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+function openBulkDialog() {
+  if (!ED.editing) return;
+  const band = ED.curBand;
+  const arr = ED.slots[band];
+  if (!arr || !arr.length) { flashHint('这一层还没有颜色'); return; }
+  if ($('bulkBandNo')) $('bulkBandNo').textContent = String(band + 1);
+  const sv = arr[0];
+  // 用本层第一个颜色的现有设置当默认值；跟随全局的取值回落到面板上的矩阵
+  const mat = (sv.matrixAuto === false)
+    ? (sv.matrix || 'bayer4')
+    : (($('projMatrix') || {}).value || 'bayer4');
+  $('bulkMethod').value = sv.method || 'mix';
+  $('bulkMatrixSize').value = mat.endsWith('2') ? '2' : '4';
+  fillBulkMatrixNames();
+  $('bulkMatrixName').value = mat.replace(/[24]$/, '');
+  $('bulkStrength').value = sv.strength ?? 64;
+  if ($('bulkFilter')) $('bulkFilter').value = sv.filter || 'FS';
+  $('bulkDialog').classList.remove('hidden');
+}
+function applyBulkToBand() {
+  const band = ED.curBand;
+  const arr = ED.slots[band];
+  if (!arr || !arr.length) return;
+  const method = $('bulkMethod').value;
+  const mat = $('bulkMatrixName').value + $('bulkMatrixSize').value;
+  const strength = +$('bulkStrength').value;
+  const filter = $('bulkFilter').value;
+  for (const sv of arr) {
+    sv.method = method;
+    sv.matrix = mat;
+    sv.matrixAuto = false;      // 批量写入的值要显式生效，不能继续跟随全局面板
+    sv.strength = strength;
+    sv.filter = filter;
+  }
+  $('bulkDialog').classList.add('hidden');
+  renderSlots(band);
+  bumpRev(); paintCanvas();
+  flashHint('第 ' + (band + 1) + ' 层 ' + arr.length + ' 个颜色已套用');
+}
+onEl('bulkSlot', 'click', openBulkDialog);
+onEl('bulkClose', 'click', () => $('bulkDialog').classList.add('hidden'));
+onEl('bulkMatrixSize', 'change', fillBulkMatrixNames);
+onEl('bulkApply', 'click', applyBulkToBand);
+if ($('bulkFilter')) {
+  $('bulkFilter').innerHTML = SLOT_FILTERS.map(v => `<option>${v}</option>`).join('');
+}
+fillBulkMatrixNames();
+
 let debounceTimer = null;
 function scheduleProcess() {
   if (!srcData) return;
@@ -1911,6 +1968,11 @@ function paramDebounced() {
   onEl(id, 'change', onParamChange);
 });
 onEl('projMatrixSize', 'change', () => { fillMatrixSelect($('projMatrix'), $('projMatrixSize').value); onParamChange(); });
+// 重心混合原本固定 4×4，2×2 只有 4 级阈值：颗粒更粗、色差更大，属于风格取舍
+onEl('baryMatrixSize', 'change', () => {
+  fillMatrixSelect($('baryMatrix'), $('baryMatrixSize').value);
+  onParamChange();
+});
 onEl('projMatrix', 'change', onParamChange);
 // 线稿保护只作用在渲染末尾（不改 plan、不改手绘归属），重画即可
 onEl('projLineKeep', 'change', () => {
@@ -2527,7 +2589,7 @@ updateGradeSummary();
 updateViewButtons();
 fitCanvas();
 refreshLockState();
-['gradePanel', 'edgePanel', 'slotDialog', 'prePanel'].forEach(makePanelDraggable);
+['gradePanel', 'edgePanel', 'slotDialog', 'prePanel', 'bulkDialog'].forEach(makePanelDraggable);
 syncLineThreshToLevel();      // 阈值滑块初值对齐当前档位
 
 // 外壳版本水印：一眼分辨跑的是新版还是缓存里的旧页面
