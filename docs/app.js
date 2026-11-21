@@ -11,7 +11,7 @@
 // 时间戳 query 强拉一次外壳（query 变了必然绕开缓存）。同一个 build 只重试一次，
 // 免得服务器仍返回旧 HTML 时来回跳。改完 index.html 记得两处一起递增。
 // ------------------------------------------------------------
-const SHELL_BUILD = '8';
+const SHELL_BUILD = '9';
 (function healStaleShell() {
   if (window.__DITHER_SHELL__ === SHELL_BUILD) return;
   try {

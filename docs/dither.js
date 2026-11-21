@@ -1550,7 +1550,9 @@ function projectionDither(img, palette, D, opts) {
         if (L > hi) hi = L;
       }
       const luma = 0.299 * src[o] + 0.587 * src[o + 1] + 0.114 * src[o + 2];
-      if ((hi - lo) > st.spanCap && luma > 76) {
+      // 去掉 `&& luma > 76`：那道门槛让所有暗部像素直接跳过跨度检查，
+      // 参数在深色区域等于不存在，黑+亮绿、白+大红这类组合就是这样漏出来的。
+      if ((hi - lo) > st.spanCap) {
         // 跨度太大就别用这组混合顶点，否则块内是「亮底 + 暗点」的棋盘格。
         // 但也不能直接平涂投影色 —— 那样整片变成无抖动的近色块，观感上就是
         // 「退化成直接投影」。跟重心混合的 wideMix 分支一样，改用有序抖动
