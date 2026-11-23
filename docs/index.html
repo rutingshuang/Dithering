@@ -8,8 +8,8 @@
   <!-- 外壳版本号：必须与 app.js 顶部的 SHELL_BUILD 相同。
        改完页面结构后跑 `python docs/update_asset_version.py --bump`，两处一起递增。
        app.js 拿它判断用户是不是加载到了缓存的旧 HTML。 -->
-  <script>window.__DITHER_SHELL__ = '9';</script>
-  <link rel="stylesheet" href="style.css?v=252db04c">
+  <script>window.__DITHER_SHELL__ = '10';</script>
+  <link rel="stylesheet" href="style.css?v=9f54b8a9">
 </head>
 <body>
   <header>
@@ -51,6 +51,19 @@
           <input type="number" id="heightInput" placeholder="高 px" min="1" class="num wide">
         </div>
         <div class="hint">按比例缩放；填宽或高任一，另一个按比例算</div>
+        <div class="field" style="margin-top:8px">
+          <label>超分放大 <span class="val" id="upscaleVal">×1</span></label>
+          <div class="row">
+            <input type="range" id="upscale" min="1" max="8" step="1" value="1" style="flex:1"
+                   title="把上面算出的输出尺寸再乘这个倍数。×1 之外抖动会在放大的图幅上做，像素变多、耗时也成倍增加">
+            <select id="upscaleMode" style="flex:0 0 88px"
+                    title="平滑：双三次高质量插值放大（细节更多）；像素：最近邻放大（保留原始硬边，适合像素风源图）">
+              <option value="smooth" selected>平滑</option>
+              <option value="pixel">像素</option>
+            </select>
+          </div>
+        </div>
+        <div class="hint" id="upscaleHint">小图放大请用「平滑」；想要硬边像素块用「像素」。放大后抖动在大图幅上重算，尺寸越大越慢。</div>
       </section>
 
       <section class="card">
@@ -552,10 +565,10 @@
   <div class="hint">拖动面板上的细线调整分界；两端固定。背景直方图标出像素落在哪。</div>
 </div>
 
-  <script src="delaunay.js?v=252db04c"></script>
-  <script src="dither.js?v=252db04c"></script>
-  <script src="textpixel.js?v=252db04c"></script>
-  <script src="app.js?v=252db04c"></script>
+  <script src="delaunay.js?v=9f54b8a9"></script>
+  <script src="dither.js?v=9f54b8a9"></script>
+  <script src="textpixel.js?v=9f54b8a9"></script>
+  <script src="app.js?v=9f54b8a9"></script>
 
 <!-- ===================== 整层套用（把方法与抖动参数一次铺到本层所有颜色） ===================== -->
 <div id="bulkDialog" class="float-panel hidden">

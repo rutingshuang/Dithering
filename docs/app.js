@@ -11,7 +11,7 @@
 // 时间戳 query 强拉一次外壳（query 变了必然绕开缓存）。同一个 build 只重试一次，
 // 免得服务器仍返回旧 HTML 时来回跳。改完 index.html 记得两处一起递增。
 // ------------------------------------------------------------
-const SHELL_BUILD = '9';
+const SHELL_BUILD = '10';
 (function healStaleShell() {
   if (window.__DITHER_SHELL__ === SHELL_BUILD) return;
   try {
@@ -59,18 +59,38 @@ function computeTarget(w, h) {
   else if (wTxt) { nw = +wTxt; nh = Math.round(h * nw / w); }
   else if (hTxt) { nh = +hTxt; nw = Math.round(w * nh / h); }
   else { const pct = +$('compression').value / 100; nw = Math.round(w * pct); nh = Math.round(h * pct); }
-  return [Math.max(1, nw), Math.max(1, nh)];
+  const f = upscaleFactor();
+  return [Math.max(1, Math.round(nw * f)), Math.max(1, Math.round(nh * f))];
 }
 
-function resizeData(imgData, tw, th) {
+function resizeData(imgData, tw, th, mode) {
   if (imgData.width === tw && imgData.height === th) return imgData;
   const cv = document.createElement('canvas');
   cv.width = imgData.width; cv.height = imgData.height;
   cv.getContext('2d').putImageData(imgData, 0, 0);
   const ocv = document.createElement('canvas');
   ocv.width = tw; ocv.height = th;
-  ocv.getContext('2d').drawImage(cv, 0, 0, tw, th);
-  return ocv.getContext('2d').getImageData(0, 0, tw, th);
+  const ctx = ocv.getContext('2d');
+  // 上采样方式：smooth = 双三次高质量（默认，适合小图超分）、pixel = 最近邻（保留原始硬边）
+  if ((mode || upsampleMode()) === 'pixel') {
+    ctx.imageSmoothingEnabled = false;
+  } else {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+  }
+  ctx.drawImage(cv, 0, 0, tw, th);
+  return ctx.getImageData(0, 0, tw, th);
+}
+
+// 超分：把基础输出尺寸再乘一个整数倍。放大的插值方式由 resizeData 的上采样模式决定，
+// 抖动本身在放大后的图幅上重算 —— 所以像素越多越慢，这是「生成大图」的真实代价。
+function upscaleFactor() {
+  const el = $('upscale');
+  return el ? Math.max(1, Math.min(8, +el.value || 1)) : 1;
+}
+function upsampleMode() {
+  const el = $('upscaleMode');
+  return (el && el.value === 'pixel') ? 'pixel' : 'smooth';
 }
 
 // ---------- 参数收集 ----------
@@ -1949,6 +1969,13 @@ onEl('edCapOff', 'change', () => {
 });
 ['matrix', 'colorSpace', 'filter', 'baryMatrix', 'projEdge', 'projSpace', 'directSpace']
   .forEach(id => onEl(id, 'change', onParamChange));
+// 超分：倍数变 = 目标尺寸变 = plan 要重建，给足防抖
+onEl('upscale', 'input', () => {
+  if ($('upscaleVal')) $('upscaleVal').textContent = '×' + upscaleFactor();
+  clearTimeout(window.__upscaleTimer);
+  window.__upscaleTimer = setTimeout(onParamChange, 320);
+});
+onEl('upscaleMode', 'change', onParamChange);
 [['labWL','labWLVal'], ['labWA','labWAVal'], ['labWB','labWBVal']].forEach(([id, vid]) => {
   onEl(id, 'input', () => {
     if ($(vid)) $(vid).textContent = (+$(id).value).toFixed(2);
