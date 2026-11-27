@@ -11,7 +11,7 @@
 // 时间戳 query 强拉一次外壳（query 变了必然绕开缓存）。同一个 build 只重试一次，
 // 免得服务器仍返回旧 HTML 时来回跳。改完 index.html 记得两处一起递增。
 // ------------------------------------------------------------
-const SHELL_BUILD = '10';
+const SHELL_BUILD = '11';
 (function healStaleShell() {
   if (window.__DITHER_SHELL__ === SHELL_BUILD) return;
   try {
@@ -71,8 +71,13 @@ function resizeData(imgData, tw, th, mode) {
   const ocv = document.createElement('canvas');
   ocv.width = tw; ocv.height = th;
   const ctx = ocv.getContext('2d');
-  // 上采样方式：smooth = 双三次高质量（默认，适合小图超分）、pixel = 最近邻（保留原始硬边）
-  if ((mode || upsampleMode()) === 'pixel') {
+  // 缩放方向决定算法，**不是**一个选项管两头：
+  //   缩小（压缩）：恒定高质量平滑。缩小时相邻像素要被平均，最近邻会直接丢像素，
+  //                 实测 ΔE 8.16 vs 平滑 7.92。
+  //   放大（超分）：才看 upsampleMode。「像素」= 最近邻原样复制（像素画/网点素材必须用），
+  //                 「平滑」= 双三次插值（只适合照片源图，会糊掉硬边）。
+  const upscaling = tw > imgData.width || th > imgData.height;
+  if (upscaling && (mode || upsampleMode()) === 'pixel') {
     ctx.imageSmoothingEnabled = false;
   } else {
     ctx.imageSmoothingEnabled = true;
